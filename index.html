@@ -1,0 +1,1513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NuBrakes Search Rank Tracker</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    html, body, #root { min-height: 100%; margin: 0; }
+    body { font-family: "Barlow", "Segoe UI", sans-serif; }
+    button, input, select { font: inherit; }
+    .kpi-num {
+      font-family: "Barlow Condensed", sans-serif;
+      font-weight: 700;
+      font-size: 36px;
+      line-height: 1;
+    }
+    .loading-screen {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 30px;
+      background: #f4f5f7;
+      color: #1c2430;
+    }
+    .loading-card {
+      max-width: 620px;
+      padding: 24px;
+      border: 1px solid #d7dce2;
+      border-radius: 12px;
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+<div id="root">
+  <div class="loading-screen">
+    <div class="loading-card">Loading NuBrakes Search Rank Tracker…</div>
+  </div>
+</div>
+
+<script type="text/babel">
+const {
+  ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ReferenceLine, ResponsiveContainer, Legend
+} = Recharts;
+
+const { useEffect, useMemo, useRef, useState } = React;
+
+const RAW_DATA_URL =
+  "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_yext_performance_weekly.json";
+
+const YEXT_COLS = {
+  week: "Week",
+  entity: "Entity ID",
+  city: "City",
+  address: "Address",
+  keyword: "Keyword",
+  pack: "Average First Local Pack Match Position",
+  organic: "Average First Organic Match Position",
+  searches: "Search Requests",
+};
+
+const THEMES = {
+  dark: {
+    bg: "#101418", panel: "#181e24", panelSoft: "#1e262e",
+    line: "#2a343e", ink: "#e8edf1", dim: "#8fa0ad", faint: "#5b6b77",
+    amber: "#f5b93f", teal: "#3fd0b6", red: "#e8604c",
+    blue: "#7f9bff", purple: "#c98bf0", onAccent: "#14181c", btnText: "#1a1408",
+  },
+  light: {
+    bg: "#f4f5f7", panel: "#ffffff", panelSoft: "#eef0f3",
+    line: "#d7dce2", ink: "#1c2430", dim: "#5a6673", faint: "#8b96a2",
+    amber: "#c98a00", teal: "#0f9c82", red: "#c94330",
+    blue: "#3d63d6", purple: "#8a4fc9", onAccent: "#ffffff", btnText: "#ffffff",
+  },
+};
+
+const metricMeta = (T) => ({
+  pack: {
+    label: "Local Pack",
+    color: T.amber,
+    domain: [0.5, 3.5],
+    ticks: [1, 2, 3],
+  },
+  organic: {
+    label: "Organic",
+    color: T.blue,
+    domain: [0, 10],
+    ticks: [1, 3, 5, 7, 9],
+  },
+});
+
+const kwColors = (T) => [T.teal, T.red, T.purple, T.amber, "#8fd45f"];
+
+const pick = (obj, aliases) => {
+  for (const key of aliases) {
+    if (obj?.[key] !== undefined && obj?.[key] !== null && obj?.[key] !== "") {
+      return obj[key];
+    }
+  }
+  return "";
+};
+
+const numberOrNaN = (value) => {
+  if (typeof value === "number") return value;
+  const parsed = parseFloat(String(value ?? "").replace(/,/g, "").trim());
+  return Number.isFinite(parsed) ? parsed : NaN;
+};
+
+const integerOrZero = (value) => {
+  const parsed = parseInt(String(value ?? "").replace(/,/g, "").trim(), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const dateToDisplay = (value) => {
+  if (!value) return "";
+  const raw = String(value).trim();
+
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) return raw;
+
+  const isoDate = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoDate) return `${isoDate[2]}/${isoDate[3]}/${isoDate[1]}`;
+
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    const mm = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(parsed.getUTCDate()).padStart(2, "0");
+    return `${mm}/${dd}/${parsed.getUTCFullYear()}`;
+  }
+  return raw;
+};
+
+const normalizeRow = (row) => {
+  const addressRaw = pick(row, [
+    "address", "street_address", "location_address", "Address", "Street Address",
+  ]);
+
+  return {
+    week: dateToDisplay(pick(row, [
+      "week", "week_date", "week_start", "week_start_date", "date", "interval",
+      YEXT_COLS.week,
+    ])),
+    entity: String(pick(row, [
+      "entity_id", "entityid", "entity", "location_id", "yext_entity_id",
+      YEXT_COLS.entity,
+    ])).trim(),
+    city: String(pick(row, [
+      "city", "location_city", YEXT_COLS.city,
+    ])).trim(),
+    address: String(addressRaw).split(",")[0].trim(),
+    keyword: String(pick(row, [
+      "keyword", "search_keyword", "query", YEXT_COLS.keyword,
+    ])).trim(),
+    pack: numberOrNaN(pick(row, [
+      "average_first_local_pack_match_position",
+      "avg_first_local_pack_match_position",
+      "average_local_pack_position",
+      "local_pack_position",
+      "pack_position",
+      "pack_pos",
+      YEXT_COLS.pack,
+    ])),
+    organic: numberOrNaN(pick(row, [
+      "average_first_organic_match_position",
+      "avg_first_organic_match_position",
+      "average_organic_position",
+      "organic_position",
+      "organic_pos",
+      YEXT_COLS.organic,
+    ])),
+    searches: integerOrZero(pick(row, [
+      "search_requests", "search_request_count", "searches", YEXT_COLS.searches,
+    ])),
+  };
+};
+
+const extractArray = (payload) => {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.rows)) return payload.rows;
+  if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.records)) return payload.records;
+  return [];
+};
+
+const normalizePayload = (payload) =>
+  extractArray(payload)
+    .map(normalizeRow)
+    .filter((r) => r.week && r.entity && r.keyword && (!Number.isNaN(r.pack) || !Number.isNaN(r.organic)));
+
+const sortKey = (week) => {
+  const parts = String(week).split("/").map(Number);
+  if (parts.length === 3 && parts.every(Number.isFinite)) {
+    const [m, d, y] = parts;
+    return y * 10000 + m * 100 + d;
+  }
+  return 0;
+};
+
+function summarize(values) {
+  if (!values.length) return null;
+  const valid = values.filter(Number.isFinite);
+  if (!valid.length) return null;
+
+  const ranked = valid.filter((v) => v > 0);
+  const avg = (arr) => arr.reduce((sum, value) => sum + value, 0) / arr.length;
+
+  return {
+    avgRanked: ranked.length ? +avg(ranked).toFixed(2) : null,
+    avgAll: +avg(valid).toFixed(2),
+    matchRate: +((ranked.length / valid.length) * 100).toFixed(1),
+    n: valid.length,
+  };
+}
+
+function weeklySummary(rows, metric, keyword, entity) {
+  const filtered = rows.filter((row) =>
+    (keyword === "all" || row.keyword === keyword) &&
+    (entity === "all" || row.entity === entity) &&
+    Number.isFinite(row[metric])
+  );
+
+  const byWeek = {};
+  filtered.forEach((row) => {
+    (byWeek[row.week] ||= []).push(row);
+  });
+
+  return Object.entries(byWeek)
+    .map(([week, weekRows]) => ({
+      week,
+      ...summarize(weekRows.map((row) => row[metric])),
+      searches: weekRows.reduce((sum, row) => sum + (row.searches || 0), 0),
+      partial: weekRows.length < (entity === "all" ? 20 : 1),
+    }))
+    .sort((a, b) => sortKey(a.week) - sortKey(b.week));
+}
+
+function KeywordTrends({ rows, mode, keywords, entity, rolloutWeek, card, T }) {
+  const colors = kwColors(T);
+  const allWeeks = [...new Set(rows.map((row) => row.week))]
+    .sort((a, b) => sortKey(a) - sortKey(b));
+
+  const series = {};
+  keywords.forEach((keyword) => {
+    series[keyword] = {
+      pack: weeklySummary(rows, "pack", keyword, entity),
+      organic: weeklySummary(rows, "organic", keyword, entity),
+    };
+  });
+
+  const positionData = allWeeks.map((week) => {
+    const item = { week: week.slice(0, 5), fullWeek: week };
+    keywords.forEach((keyword) => {
+      const pack = series[keyword].pack.find((x) => x.week === week);
+      const organic = series[keyword].organic.find((x) => x.week === week);
+      item[`${keyword} · pack`] = pack
+        ? (mode === "avgRanked" ? pack.avgRanked : pack.avgAll)
+        : null;
+      item[`${keyword} · organic`] = organic
+        ? (mode === "avgRanked" ? organic.avgRanked : organic.avgAll)
+        : null;
+    });
+    return item;
+  });
+
+  const rateData = allWeeks.map((week) => {
+    const item = { week: week.slice(0, 5), fullWeek: week };
+    keywords.forEach((keyword) => {
+      const pack = series[keyword].pack.find((x) => x.week === week);
+      const organic = series[keyword].organic.find((x) => x.week === week);
+      item[`${keyword} · pack`] = pack?.matchRate ?? null;
+      item[`${keyword} · organic`] = organic?.matchRate ?? null;
+    });
+    return item;
+  });
+
+  const rolloutIndex = positionData.findIndex((item) => item.fullWeek === rolloutWeek);
+  const heading = (text) => (
+    <div style={{
+      paddingLeft: 20, fontFamily: "'Barlow Condensed'", fontWeight: 600,
+      fontSize: 17, textTransform: "uppercase", letterSpacing: 0.8, color: T.dim,
+    }}>
+      {text}
+    </div>
+  );
+
+  const tooltipStyle = {
+    background: T.panel,
+    border: `1px solid ${T.line}`,
+    borderRadius: 8,
+    color: T.ink,
+  };
+
+  const rolloutLine = rolloutIndex >= 0 ? (
+    <ReferenceLine
+      x={positionData[rolloutIndex].week}
+      stroke={T.teal}
+      strokeDasharray="4 4"
+      label={{
+        value: "listing changes",
+        fill: T.teal,
+        fontSize: 11,
+        position: "top",
+      }}
+    />
+  ) : null;
+
+  const chartLines = () =>
+    keywords.flatMap((keyword, index) => [
+      <Line
+        key={`${keyword}-pack`}
+        type="monotone"
+        dataKey={`${keyword} · pack`}
+        stroke={colors[index % colors.length]}
+        strokeWidth={2.5}
+        dot={{ r: 4 }}
+        connectNulls
+      />,
+      <Line
+        key={`${keyword}-organic`}
+        type="monotone"
+        dataKey={`${keyword} · organic`}
+        stroke={colors[index % colors.length]}
+        strokeWidth={2}
+        strokeDasharray="6 4"
+        dot={{ r: 3 }}
+        connectNulls
+      />,
+    ]);
+
+  if (!keywords.length) return null;
+
+  return (
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+      gap: 12,
+      marginTop: 12,
+    }}>
+      <div style={{ ...card, padding: "18px 8px 8px 0" }}>
+        {heading("Position trend by keyword (solid = pack, dashed = organic)")}
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={positionData} margin={{ top: 16, right: 20, left: 0, bottom: 4 }}>
+            <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
+            <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
+            <YAxis
+              reversed
+              domain={[0, 10]}
+              ticks={[1, 3, 5, 7, 9]}
+              stroke={T.faint}
+              tick={{ fill: T.dim, fontSize: 12 }}
+              label={{
+                value: "position",
+                angle: -90,
+                position: "insideLeft",
+                fill: T.faint,
+                fontSize: 11,
+              }}
+            />
+            <Tooltip contentStyle={tooltipStyle} />
+            <Legend wrapperStyle={{ fontSize: 11, color: T.dim }} />
+            {rolloutLine}
+            {chartLines()}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div style={{ ...card, padding: "18px 8px 8px 0" }}>
+        {heading("Match rate trend by keyword (solid = pack, dashed = organic)")}
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={rateData} margin={{ top: 16, right: 20, left: 0, bottom: 4 }}>
+            <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
+            <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
+            <YAxis
+              domain={[0, 100]}
+              stroke={T.faint}
+              tick={{ fill: T.dim, fontSize: 12 }}
+              unit="%"
+            />
+            <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
+            <Legend wrapperStyle={{ fontSize: 11, color: T.dim }} />
+            {rolloutLine}
+            {chartLines()}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function TrendPanel({
+  rows, metric, mode, keyword, keywords, entity, rolloutWeek, card, T
+}) {
+  const meta = metricMeta(T)[metric];
+  const colors = kwColors(T);
+  const main = weeklySummary(rows, metric, keyword, entity);
+  const perKeyword = {};
+
+  keywords.forEach((item) => {
+    perKeyword[item] = weeklySummary(rows, metric, item, entity);
+  });
+
+  const allWeeks = [...new Set(rows.map((row) => row.week))]
+    .sort((a, b) => sortKey(a) - sortKey(b));
+
+  const chartData = allWeeks.map((week) => {
+    const mainWeek = main.find((item) => item.week === week);
+    const item = {
+      week: week.slice(0, 5),
+      fullWeek: week,
+      position: mainWeek
+        ? (mode === "avgRanked" ? mainWeek.avgRanked : mainWeek.avgAll)
+        : null,
+      matchRate: mainWeek?.matchRate ?? null,
+      n: mainWeek?.n ?? 0,
+    };
+
+    keywords.forEach((keywordItem) => {
+      const keywordWeek = perKeyword[keywordItem].find((x) => x.week === week);
+      item[keywordItem] = keywordWeek
+        ? (mode === "avgRanked" ? keywordWeek.avgRanked : keywordWeek.avgAll)
+        : null;
+    });
+    return item;
+  });
+
+  const rolloutIndex = chartData.findIndex((item) => item.fullWeek === rolloutWeek);
+  const keywordLabel = keyword === "all" ? "all keywords" : `"${keyword}"`;
+
+  const heading = (text) => (
+    <div style={{
+      paddingLeft: 20, fontFamily: "'Barlow Condensed'", fontWeight: 600,
+      fontSize: 17, textTransform: "uppercase", letterSpacing: 0.8, color: T.dim,
+    }}>
+      {text}
+    </div>
+  );
+
+  const tooltipStyle = {
+    background: T.panel,
+    border: `1px solid ${T.line}`,
+    borderRadius: 8,
+    color: T.ink,
+  };
+
+  return (
+    <>
+      <div style={{ ...card, padding: "18px 8px 8px 0", marginTop: 12 }}>
+        {heading(`${meta.label} — weekly average position (${keywordLabel})`)}
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart data={chartData} margin={{ top: 16, right: 24, left: 0, bottom: 4 }}>
+            <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
+            <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
+            <YAxis
+              reversed
+              domain={meta.domain}
+              ticks={meta.ticks}
+              stroke={T.faint}
+              tick={{ fill: T.dim, fontSize: 12 }}
+              label={{
+                value: "position",
+                angle: -90,
+                position: "insideLeft",
+                fill: T.faint,
+                fontSize: 11,
+              }}
+            />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              formatter={(value, name) => [
+                value,
+                name === "position" ? "avg position" : name,
+              ]}
+              labelFormatter={(label, payload) => {
+                const data = payload?.[0]?.payload;
+                return data
+                  ? `${data.fullWeek} · ${data.n} row${data.n === 1 ? "" : "s"}`
+                  : label;
+              }}
+            />
+            {rolloutIndex >= 0 && (
+              <ReferenceLine
+                x={chartData[rolloutIndex].week}
+                stroke={T.teal}
+                strokeDasharray="4 4"
+                label={{
+                  value: "listing changes",
+                  fill: T.teal,
+                  fontSize: 11,
+                  position: "top",
+                }}
+              />
+            )}
+            <Line
+              type="monotone"
+              dataKey="position"
+              stroke={meta.color}
+              strokeWidth={3}
+              dot={{ r: 5, fill: meta.color, stroke: T.bg, strokeWidth: 2 }}
+              connectNulls
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+        gap: 12,
+        marginTop: 12,
+      }}>
+        {keyword === "all" && (
+          <div style={{ ...card, padding: "18px 8px 8px 0" }}>
+            {heading("Keyword comparison")}
+            <ResponsiveContainer width="100%" height={220}>
+              <ComposedChart data={chartData} margin={{ top: 14, right: 20, left: 0, bottom: 4 }}>
+                <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
+                <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
+                <YAxis
+                  reversed
+                  domain={meta.domain}
+                  ticks={meta.ticks}
+                  stroke={T.faint}
+                  tick={{ fill: T.dim, fontSize: 12 }}
+                />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: 12, color: T.dim }} />
+                {keywords.map((keywordItem, index) => (
+                  <Line
+                    key={keywordItem}
+                    type="monotone"
+                    dataKey={keywordItem}
+                    stroke={colors[index % colors.length]}
+                    strokeWidth={2}
+                    dot={{ r: 4 }}
+                    connectNulls
+                  />
+                ))}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        <div style={{ ...card, padding: "18px 8px 8px 0" }}>
+          {heading(`Match rate — ${keywordLabel}`)}
+          <ResponsiveContainer width="100%" height={220}>
+            <ComposedChart data={chartData} margin={{ top: 14, right: 20, left: 0, bottom: 4 }}>
+              <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
+              <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
+              <YAxis
+                domain={[0, 100]}
+                stroke={T.faint}
+                tick={{ fill: T.dim, fontSize: 12 }}
+                unit="%"
+              />
+              <Tooltip contentStyle={tooltipStyle} />
+              <Bar
+                dataKey="matchRate"
+                fill={meta.color}
+                radius={[4, 4, 0, 0]}
+                maxBarSize={48}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function RankTracker() {
+  const [themeName, setThemeName] = useState("light");
+  const T = THEMES[themeName];
+  const MM = metricMeta(T);
+
+  const [rows, setRows] = useState([]);
+  const [sourceStatus, setSourceStatus] = useState("loading");
+  const [sourceMessage, setSourceMessage] = useState("Loading the hosted weekly JSON…");
+  const [rolloutWeek, setRolloutWeek] = useState("");
+  const [mode, setMode] = useState("avgRanked");
+  const [tab, setTab] = useState("pack");
+  const [keyword, setKeyword] = useState("all");
+  const [entity, setEntity] = useState("all");
+  const [entityQuery, setEntityQuery] = useState("");
+  const [note, setNote] = useState("");
+  const [sortBy, setSortBy] = useState("pack");
+  const [sortDir, setSortDir] = useState("asc");
+  const [sumWeek, setSumWeek] = useState("all");
+  const fileRef = useRef(null);
+
+  const loadHostedData = async () => {
+    setSourceStatus("loading");
+    setSourceMessage("Loading the hosted weekly JSON…");
+    setNote("");
+
+    try {
+      const response = await fetch(`${RAW_DATA_URL}?v=${Date.now()}`, {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const normalized = normalizePayload(payload);
+
+      if (!normalized.length) {
+        throw new Error("The JSON loaded but no compatible Yext rows were found.");
+      }
+
+      setRows(normalized);
+      setSourceStatus("loaded");
+      setSourceMessage(
+        `Live JSON loaded · ${normalized.length.toLocaleString()} rows · ` +
+        `${new Set(normalized.map((row) => row.week)).size} weeks`
+      );
+    } catch (error) {
+      console.error(error);
+      setRows([]);
+      setSourceStatus("error");
+      setSourceMessage(
+        `Could not load the hosted JSON: ${error.message}. ` +
+        `Open this dashboard through a web server or GitHub Pages, then verify CORS and the field names.`
+      );
+    }
+  };
+
+  useEffect(() => {
+    loadHostedData();
+  }, []);
+
+  const keywords = useMemo(
+    () => [...new Set(rows.map((row) => row.keyword).filter(Boolean))].sort(),
+    [rows]
+  );
+
+  const entities = useMemo(() => {
+    const map = {};
+    rows.forEach((row) => {
+      if (row.entity && !map[row.entity]) {
+        map[row.entity] = {
+          id: row.entity,
+          city: row.city,
+          address: row.address,
+        };
+      }
+    });
+
+    return Object.values(map).sort((a, b) =>
+      `${a.city}${a.id}`.localeCompare(`${b.city}${b.id}`)
+    );
+  }, [rows]);
+
+  const weeksList = useMemo(
+    () => [...new Set(rows.map((row) => row.week))]
+      .sort((a, b) => sortKey(a) - sortKey(b)),
+    [rows]
+  );
+
+  const filteredEntities = useMemo(() => {
+    const query = entityQuery.trim().toLowerCase();
+    if (!query) return entities;
+
+    return entities.filter((item) =>
+      item.id.toLowerCase().includes(query) ||
+      item.city.toLowerCase().includes(query) ||
+      item.address.toLowerCase().includes(query)
+    );
+  }, [entities, entityQuery]);
+
+  const handleUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setNote("");
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (result) => {
+        const parsed = result.data
+          .map(normalizeRow)
+          .filter((row) =>
+            row.week &&
+            row.entity &&
+            row.keyword &&
+            (!Number.isNaN(row.pack) || !Number.isNaN(row.organic))
+          );
+
+        if (!parsed.length) {
+          setNote("No usable Yext rows were found in that CSV.");
+          return;
+        }
+
+        const newWeeks = new Set(parsed.map((row) => row.week));
+        setRows((previous) => [
+          ...previous.filter((row) => !newWeeks.has(row.week)),
+          ...parsed,
+        ]);
+
+        setNote(
+          `Added ${parsed.length.toLocaleString()} rows across ` +
+          `${newWeeks.size} week${newWeeks.size === 1 ? "" : "s"} from ${file.name}.`
+        );
+      },
+      error: () => setNote("The CSV could not be read."),
+    });
+
+    event.target.value = "";
+  };
+
+  const entitySummary = useMemo(() => {
+    const base = rows.filter((row) =>
+      (keyword === "all" || row.keyword === keyword) &&
+      (sumWeek === "all" || row.week === sumWeek)
+    );
+
+    const byEntity = {};
+    base.forEach((row) => {
+      (byEntity[row.entity] ||= []).push(row);
+    });
+
+    const list = Object.entries(byEntity).map(([id, entityRows]) => {
+      const info = entityRows[0];
+      const pack = summarize(
+        entityRows.map((row) => row.pack).filter(Number.isFinite)
+      );
+      const organic = summarize(
+        entityRows.map((row) => row.organic).filter(Number.isFinite)
+      );
+
+      return {
+        id,
+        city: info.city,
+        address: info.address,
+        n: entityRows.length,
+        searches: entityRows.reduce((sum, row) => sum + (row.searches || 0), 0),
+        packPos: pack?.avgRanked ?? null,
+        packRate: pack?.matchRate ?? null,
+        orgPos: organic?.avgRanked ?? null,
+        orgRate: organic?.matchRate ?? null,
+      };
+    });
+
+    const key = {
+      pack: "packPos",
+      packRate: "packRate",
+      organic: "orgPos",
+      orgRate: "orgRate",
+      city: "city",
+      searches: "searches",
+    }[sortBy] || "packPos";
+
+    const direction = sortDir === "asc" ? 1 : -1;
+
+    return list.sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+
+      if (typeof av === "string") return av.localeCompare(bv) * direction;
+      return (av - bv) * direction;
+    });
+  }, [rows, keyword, sumWeek, sortBy, sortDir]);
+
+  const toggleSort = (column) => {
+    if (sortBy === column) {
+      setSortDir(sortDir === "asc" ? "desc" : "asc");
+    } else {
+      setSortBy(column);
+      setSortDir("asc");
+    }
+  };
+
+  const arrow = (column) =>
+    sortBy === column ? (sortDir === "asc" ? " ▲" : " ▼") : "";
+
+  const packSummary = weeklySummary(rows, "pack", keyword, entity);
+  const organicSummary = weeklySummary(rows, "organic", keyword, entity);
+
+  const deltaFor = (summary) => {
+    const fullWeeks = summary.filter((week) => !week.partial && week.avgRanked != null);
+    return fullWeeks.length >= 2
+      ? fullWeeks[fullWeeks.length - 1].avgRanked - fullWeeks[0].avgRanked
+      : null;
+  };
+
+  const latestPack = packSummary[packSummary.length - 1];
+  const latestOrganic = organicSummary[organicSummary.length - 1];
+  const packDelta = deltaFor(packSummary);
+  const organicDelta = deltaFor(organicSummary);
+
+  const card = {
+    background: T.panel,
+    border: `1px solid ${T.line}`,
+    borderRadius: 10,
+    padding: "16px 18px",
+  };
+
+  const kpi = (label, value, subtext, color = T.ink) => (
+    <div style={card}>
+      <div style={{
+        color: T.dim,
+        fontSize: 12,
+        textTransform: "uppercase",
+        letterSpacing: 1,
+      }}>
+        {label}
+      </div>
+      <div className="kpi-num" style={{ color, marginTop: 6 }}>
+        {value ?? "—"}
+      </div>
+      <div style={{ color: T.faint, fontSize: 12, marginTop: 4 }}>
+        {subtext}
+      </div>
+    </div>
+  );
+
+  const deltaColor = (delta) =>
+    delta == null ? T.faint : delta < 0 ? T.teal : delta > 0 ? T.red : T.ink;
+
+  const deltaText = (delta) =>
+    delta == null ? "—" : `${delta > 0 ? "+" : ""}${delta.toFixed(2)}`;
+
+  const selectedEntity =
+    entity === "all" ? null : entities.find((item) => item.id === entity);
+
+  const scopeLabel =
+    (keyword === "all" ? "All keywords" : keyword) +
+    (selectedEntity ? ` · ${selectedEntity.city}` : "");
+
+  const selectStyle = {
+    background: T.panelSoft,
+    color: T.ink,
+    border: `1px solid ${T.line}`,
+    borderRadius: 6,
+    padding: "5px 8px",
+    marginLeft: 6,
+  };
+
+  const statusColor =
+    sourceStatus === "loaded" ? T.teal :
+    sourceStatus === "error" ? T.red :
+    T.amber;
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: T.bg,
+      color: T.ink,
+      padding: "28px 24px",
+      transition: "background 0.25s, color 0.25s",
+    }}>
+      <style>{`
+        button:focus-visible, select:focus-visible, input:focus-visible {
+          outline: 2px solid ${T.amber};
+          outline-offset: 2px;
+        }
+      `}</style>
+
+      <div style={{ maxWidth: 1080, margin: "0 auto" }}>
+        <div style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 12,
+        }}>
+          <div>
+            <div style={{
+              fontFamily: "'Barlow Condensed'",
+              fontWeight: 700,
+              fontSize: 30,
+              letterSpacing: 0.5,
+              textTransform: "uppercase",
+            }}>
+              Search <span style={{ color: T.amber }}>Rank Tracker</span>
+            </div>
+            <div style={{ color: T.dim, fontSize: 13, marginTop: 2 }}>
+              Local pack & organic first-match position · Google Desktop · lower is better
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={() => setThemeName(themeName === "light" ? "dark" : "light")}
+              style={{
+                background: T.panelSoft,
+                color: T.ink,
+                border: `1px solid ${T.line}`,
+                borderRadius: 999,
+                padding: "8px 14px",
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              {themeName === "light" ? "🌙 Dark" : "☀️ Light"}
+            </button>
+
+            <button
+              onClick={loadHostedData}
+              style={{
+                background: T.panelSoft,
+                color: T.ink,
+                border: `1px solid ${T.line}`,
+                borderRadius: 8,
+                padding: "9px 14px",
+                fontWeight: 600,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              Refresh JSON
+            </button>
+
+            <button
+              onClick={() => fileRef.current?.click()}
+              style={{
+                background: T.amber,
+                color: T.btnText,
+                border: "none",
+                borderRadius: 8,
+                padding: "9px 16px",
+                fontWeight: 600,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              Add weekly CSV
+            </button>
+          </div>
+
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv"
+            onChange={handleUpload}
+            style={{ display: "none" }}
+          />
+        </div>
+
+        <div style={{
+          ...card,
+          marginTop: 14,
+          padding: "10px 14px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+        }}>
+          <div style={{ fontSize: 13, color: statusColor }}>
+            {sourceMessage}
+          </div>
+          <a
+            href={RAW_DATA_URL}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: T.blue, fontSize: 12, wordBreak: "break-all" }}
+          >
+            Open raw JSON
+          </a>
+        </div>
+
+        {note && (
+          <div style={{ marginTop: 10, fontSize: 13, color: T.teal }}>
+            {note}
+          </div>
+        )}
+
+        {sourceStatus === "error" && rows.length === 0 && (
+          <div style={{ ...card, marginTop: 14, color: T.dim, lineHeight: 1.6 }}>
+            The dashboard is ready, but it currently has no rows. You can still use
+            <strong style={{ color: T.ink }}> Add weekly CSV</strong>. For automatic loading,
+            publish this HTML through GitHub Pages or another web server rather than opening
+            it only as a local <code>file://</code> page.
+          </div>
+        )}
+
+        <div style={{
+          ...card,
+          marginTop: 18,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}>
+          <div style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}>
+            <span style={{
+              color: T.dim,
+              fontSize: 12,
+              textTransform: "uppercase",
+              letterSpacing: 1,
+              width: 64,
+            }}>
+              Keyword
+            </span>
+
+            {["all", ...keywords].map((item) => (
+              <button
+                key={item}
+                onClick={() => setKeyword(item)}
+                style={{
+                  background: keyword === item ? T.ink : T.panelSoft,
+                  color: keyword === item ? T.panel : T.dim,
+                  border: `1px solid ${keyword === item ? T.ink : T.line}`,
+                  borderRadius: 999,
+                  padding: "6px 14px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                {item === "all" ? "All keywords" : item}
+              </button>
+            ))}
+          </div>
+
+          <div style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}>
+            <span style={{
+              color: T.dim,
+              fontSize: 12,
+              textTransform: "uppercase",
+              letterSpacing: 1,
+              width: 64,
+            }}>
+              Entity
+            </span>
+
+            <input
+              value={entityQuery}
+              onChange={(event) => setEntityQuery(event.target.value)}
+              placeholder="Search city, address, or ID…"
+              style={{
+                background: T.panelSoft,
+                color: T.ink,
+                border: `1px solid ${T.line}`,
+                borderRadius: 6,
+                padding: "6px 10px",
+                fontSize: 13,
+                width: 220,
+              }}
+            />
+
+            <select
+              value={entity}
+              onChange={(event) => setEntity(event.target.value)}
+              style={{ ...selectStyle, marginLeft: 0, maxWidth: 450 }}
+            >
+              <option value="all">All entities ({entities.length})</option>
+              {filteredEntities.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.city} — {item.address} ({item.id})
+                </option>
+              ))}
+            </select>
+
+            {entity !== "all" && (
+              <button
+                onClick={() => setEntity("all")}
+                style={{
+                  background: "transparent",
+                  color: T.dim,
+                  border: `1px solid ${T.line}`,
+                  borderRadius: 999,
+                  padding: "5px 12px",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                Clear ✕
+              </button>
+            )}
+          </div>
+
+          {selectedEntity && (
+            <div style={{ color: T.faint, fontSize: 12 }}>
+              Showing {selectedEntity.id} · {selectedEntity.address}, {selectedEntity.city}.
+              Single-entity weekly averages often come from only one or two rows per keyword,
+              so week-to-week movement can be noisy.
+            </div>
+          )}
+        </div>
+
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+          gap: 12,
+          marginTop: 14,
+        }}>
+          {kpi(
+            "Pack · latest",
+            latestPack?.avgRanked,
+            `${latestPack?.week ?? "—"} · ${latestPack?.matchRate ?? "—"}% match · ${scopeLabel}`,
+            T.amber
+          )}
+          {kpi(
+            "Pack · Δ vs baseline",
+            deltaText(packDelta),
+            packDelta == null
+              ? "needs 2+ full weeks"
+              : packDelta < 0
+              ? "moving up the pack"
+              : packDelta > 0
+              ? "slipping down"
+              : "flat",
+            deltaColor(packDelta)
+          )}
+          {kpi(
+            "Organic · latest",
+            latestOrganic?.avgRanked,
+            `${latestOrganic?.week ?? "—"} · ${latestOrganic?.matchRate ?? "—"}% match · ${scopeLabel}`,
+            T.blue
+          )}
+          {kpi(
+            "Organic · Δ vs baseline",
+            deltaText(organicDelta),
+            organicDelta == null
+              ? "needs 2+ full weeks"
+              : organicDelta < 0
+              ? "climbing organically"
+              : organicDelta > 0
+              ? "slipping down"
+              : "flat",
+            deltaColor(organicDelta)
+          )}
+        </div>
+
+        <div style={{
+          display: "flex",
+          gap: 16,
+          alignItems: "center",
+          margin: "22px 0 4px",
+          flexWrap: "wrap",
+          fontSize: 13,
+        }}>
+          <div style={{
+            display: "flex",
+            background: T.panelSoft,
+            border: `1px solid ${T.line}`,
+            borderRadius: 8,
+            overflow: "hidden",
+          }}>
+            {["pack", "organic"].map((item) => (
+              <button
+                key={item}
+                onClick={() => setTab(item)}
+                style={{
+                  background: tab === item ? MM[item].color : "transparent",
+                  color: tab === item ? T.onAccent : T.dim,
+                  border: "none",
+                  padding: "7px 16px",
+                  fontWeight: 600,
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                {MM[item].label}
+              </button>
+            ))}
+          </div>
+
+          <label style={{ color: T.dim }}>
+            Metric
+            <select
+              value={mode}
+              onChange={(event) => setMode(event.target.value)}
+              style={selectStyle}
+            >
+              <option value="avgRanked">Avg position (ranked rows only)</option>
+              <option value="avgAll">Avg position (zeros included)</option>
+            </select>
+          </label>
+
+          <label style={{ color: T.dim }}>
+            Rollout week marker
+            <select
+              value={rolloutWeek}
+              onChange={(event) => setRolloutWeek(event.target.value)}
+              style={selectStyle}
+            >
+              <option value="">none</option>
+              {weeksList.map((week) => (
+                <option key={week} value={week}>{week}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <TrendPanel
+          rows={rows}
+          metric={tab}
+          mode={mode}
+          keyword={keyword}
+          keywords={keywords}
+          entity={entity}
+          rolloutWeek={rolloutWeek}
+          card={card}
+          T={T}
+        />
+
+        <KeywordTrends
+          rows={rows}
+          mode={mode}
+          keywords={keywords}
+          entity={entity}
+          rolloutWeek={rolloutWeek}
+          card={card}
+          T={T}
+        />
+
+        <div style={{ ...card, marginTop: 12, overflowX: "auto" }}>
+          <div style={{
+            fontFamily: "'Barlow Condensed'",
+            fontWeight: 600,
+            fontSize: 17,
+            textTransform: "uppercase",
+            letterSpacing: 0.8,
+            color: T.dim,
+            marginBottom: 8,
+          }}>
+            Weekly summary — {scopeLabel}
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{
+                color: T.dim,
+                textAlign: "left",
+                textTransform: "uppercase",
+                fontSize: 11,
+                letterSpacing: 0.8,
+              }}>
+                {[
+                  "Week", "Rows", "Pack pos", "Pack match",
+                  "Organic pos", "Organic match", "Searches",
+                ].map((heading) => (
+                  <th
+                    key={heading}
+                    style={{
+                      padding: "6px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                    }}
+                  >
+                    {heading}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+
+            <tbody>
+              {packSummary.map((pack) => {
+                const organic = organicSummary.find((item) => item.week === pack.week);
+                return (
+                  <tr key={pack.week}>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      {pack.week}
+                    </td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      {pack.n}
+                    </td>
+                    <td style={{
+                      padding: "8px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      color: T.amber,
+                      fontWeight: 600,
+                    }}>
+                      {pack.avgRanked ?? "—"}
+                    </td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      {pack.matchRate != null ? `${pack.matchRate}%` : "—"}
+                    </td>
+                    <td style={{
+                      padding: "8px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      color: T.blue,
+                      fontWeight: 600,
+                    }}>
+                      {organic?.avgRanked ?? "—"}
+                    </td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      {organic?.matchRate != null ? `${organic.matchRate}%` : "—"}
+                    </td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      {pack.searches}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={{ ...card, marginTop: 12 }}>
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 8,
+            marginBottom: 8,
+          }}>
+            <div style={{
+              fontFamily: "'Barlow Condensed'",
+              fontWeight: 600,
+              fontSize: 17,
+              textTransform: "uppercase",
+              letterSpacing: 0.8,
+              color: T.dim,
+            }}>
+              All entities — {keyword === "all" ? "all keywords" : keyword}
+              {" "}({entitySummary.length})
+            </div>
+
+            <label style={{ color: T.dim, fontSize: 13 }}>
+              Week
+              <select
+                value={sumWeek}
+                onChange={(event) => setSumWeek(event.target.value)}
+                style={selectStyle}
+              >
+                <option value="all">All weeks combined</option>
+                {weeksList.map((week) => (
+                  <option key={week} value={week}>{week}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div style={{ maxHeight: 420, overflowY: "auto", overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{
+                  color: T.dim,
+                  textAlign: "left",
+                  textTransform: "uppercase",
+                  fontSize: 11,
+                  letterSpacing: 0.8,
+                  position: "sticky",
+                  top: 0,
+                  background: T.panel,
+                  zIndex: 1,
+                }}>
+                  <th
+                    onClick={() => toggleSort("city")}
+                    style={{
+                      padding: "6px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      cursor: "pointer",
+                      userSelect: "none",
+                    }}
+                  >
+                    Entity{arrow("city")}
+                  </th>
+                  <th
+                    onClick={() => toggleSort("pack")}
+                    style={{
+                      padding: "6px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      color: T.amber,
+                    }}
+                  >
+                    Pack pos{arrow("pack")}
+                  </th>
+                  <th
+                    onClick={() => toggleSort("packRate")}
+                    style={{
+                      padding: "6px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      cursor: "pointer",
+                      userSelect: "none",
+                    }}
+                  >
+                    Pack match{arrow("packRate")}
+                  </th>
+                  <th
+                    onClick={() => toggleSort("organic")}
+                    style={{
+                      padding: "6px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      color: T.blue,
+                    }}
+                  >
+                    Organic pos{arrow("organic")}
+                  </th>
+                  <th
+                    onClick={() => toggleSort("orgRate")}
+                    style={{
+                      padding: "6px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      cursor: "pointer",
+                      userSelect: "none",
+                    }}
+                  >
+                    Organic match{arrow("orgRate")}
+                  </th>
+                  <th
+                    onClick={() => toggleSort("searches")}
+                    style={{
+                      padding: "6px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      cursor: "pointer",
+                      userSelect: "none",
+                    }}
+                  >
+                    Searches{arrow("searches")}
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {entitySummary.map((item) => (
+                  <tr
+                    key={item.id}
+                    onClick={() => setEntity(entity === item.id ? "all" : item.id)}
+                    style={{
+                      cursor: "pointer",
+                      background: entity === item.id ? T.panelSoft : "transparent",
+                    }}
+                    title="Click to filter the charts to this entity"
+                  >
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      <span style={{ fontWeight: 600 }}>{item.city}</span>
+                      <span style={{ color: T.faint }}>
+                        {" "}— {item.address} · {item.id}
+                      </span>
+                    </td>
+                    <td style={{
+                      padding: "8px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      color: T.amber,
+                      fontWeight: 600,
+                    }}>
+                      {item.packPos ?? "—"}
+                    </td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      {item.packRate != null ? `${item.packRate}%` : "—"}
+                    </td>
+                    <td style={{
+                      padding: "8px 10px",
+                      borderBottom: `1px solid ${T.line}`,
+                      color: T.blue,
+                      fontWeight: 600,
+                    }}>
+                      {item.orgPos ?? "—"}
+                    </td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      {item.orgRate != null ? `${item.orgRate}%` : "—"}
+                    </td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${T.line}` }}>
+                      {item.searches}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ color: T.faint, fontSize: 12, marginTop: 8 }}>
+            Click a column header to sort; entities with no ranking remain last.
+            Click a row to filter the dashboard to that entity.
+          </div>
+        </div>
+
+        <div style={{
+          color: T.faint,
+          fontSize: 12,
+          marginTop: 14,
+          lineHeight: 1.6,
+        }}>
+          The dashboard loads its base data from the hosted weekly JSON on each page load.
+          A position of 0 means no first match, so the default average uses ranked rows only
+          and reports non-appearances separately through match rate. CSV uploads are temporary
+          and remain in the current browser session only.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<RankTracker />);
+</script>
+</body>
+</html>

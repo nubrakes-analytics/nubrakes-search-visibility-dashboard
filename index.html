@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NuBrakes Local Search Performance Dashboard</title>
+  <title>NuBrakes Local Search &amp; Reviews Dashboard</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -45,7 +45,7 @@
 <body>
 <div id="root">
   <div class="loading-screen">
-    <div class="loading-card">Loading NuBrakes Local Search Performance Dashboard…</div>
+    <div class="loading-card">Loading NuBrakes Local Search &amp; Reviews Dashboard…</div>
   </div>
 </div>
 
@@ -71,6 +71,12 @@ const { useEffect, useMemo, useRef, useState } = React;
 
 const RAW_DATA_URL =
   "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_yext_performance_weekly.json";
+
+const REVIEW_JOB_DATA_URL =
+  "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_reviews_job_daily.json";
+
+const STORE_REVIEW_DATA_URL =
+  "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_store_reviews_daily.json";
 
 const YEXT_COLS = {
   week: "Week",
@@ -114,6 +120,11 @@ const metricMeta = (T) => ({
 });
 
 const kwColors = (T) => [T.teal, T.red, T.purple, T.amber, "#8fd45f"];
+
+const marketColors = (T) => [
+  T.teal, T.red, T.purple, T.amber, T.blue,
+  "#70b8ff", "#7bc96f", "#f58aa8", "#9b8afb", "#e59d55", "#58b6a4",
+];
 
 const pick = (obj, aliases) => {
   for (const key of aliases) {
@@ -210,6 +221,83 @@ const normalizePayload = (payload) =>
   extractArray(payload)
     .map(normalizeRow)
     .filter((r) => r.week && r.entity && r.keyword && (!Number.isNaN(r.pack) || !Number.isNaN(r.organic)));
+
+const isoDate = (value) => {
+  const match = String(value || "").match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : "";
+};
+
+const monthStart = (value) => {
+  const date = isoDate(value);
+  return date ? `${date.slice(0, 7)}-01` : "";
+};
+
+const cleanMarket = (value) => {
+  const market = String(value || "").trim();
+  return !market || market === "#N/A" ? "Unassigned" : market;
+};
+
+const normalizeReviewJobRow = (row) => ({
+  day: isoDate(pick(row, ["Day", "day", "Date", "date"])),
+  week: isoDate(pick(row, ["Week", "week"])),
+  month: isoDate(pick(row, ["Month", "month"])) || monthStart(pick(row, ["Day", "day"])),
+  market: cleanMarket(pick(row, ["market", "Market"])),
+  completedJobs: integerOrZero(pick(row, ["Completed Jobs", "completed_jobs", "jobs"])),
+  reviews: integerOrZero(pick(row, ["Reviews", "reviews"])),
+});
+
+const normalizeStoreReviewRow = (row) => {
+  const date = isoDate(pick(row, ["Date", "date", "Day", "day"]));
+  const storeCode = String(pick(row, ["Store code", "store_code", "Store Code"])).trim();
+  const locationId = String(pick(row, ["Location ID", "location_id"])).trim();
+
+  return {
+    date,
+    week: isoDate(pick(row, ["Week", "week"])),
+    month: monthStart(date),
+    market: cleanMarket(pick(row, ["Market", "market"])),
+    reviews: integerOrZero(pick(row, ["Reviews", "reviews"])),
+    listing: storeCode || locationId,
+    storeCode: storeCode || locationId || "Unknown listing",
+    locationId,
+    name: String(pick(row, ["Location name", "location_name"])).trim(),
+    address: String(pick(row, ["Address lines", "address", "Address"])).trim(),
+  };
+};
+
+const normalizeReviewJobPayload = (payload) =>
+  extractArray(payload)
+    .map(normalizeReviewJobRow)
+    .filter((row) => row.day && row.week && row.month && row.market);
+
+const normalizeStoreReviewPayload = (payload) =>
+  extractArray(payload)
+    .map(normalizeStoreReviewRow)
+    .filter((row) => row.date && row.week && row.month && row.market && row.listing);
+
+const shortPeriod = (value, granularity) => {
+  const date = isoDate(value);
+  if (!date) return String(value || "");
+  const [year, month, day] = date.split("-");
+  return granularity === "month" ? `${month}/${year.slice(2)}` : `${month}/${day}/${year.slice(2)}`;
+};
+
+const niceChartMax = (value) => {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  const power = 10 ** Math.floor(Math.log10(value));
+  const fraction = value / power;
+  const rounded = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+  return rounded * power;
+};
+
+const chartScale = (data, series) => {
+  const peak = Math.max(0, ...data.flatMap((row) =>
+    series.map((item) => Number.isFinite(row[item.key]) ? row[item.key] : 0)
+  ));
+  const max = niceChartMax(peak * 1.08);
+  const ticks = Array.from({ length: 5 }, (_, index) => +(max * index / 4).toFixed(2));
+  return { domain: [0, max], ticks };
+};
 
 const sortKey = (week) => {
   const parts = String(week).split("/").map(Number);
@@ -528,6 +616,359 @@ function TrendPanel({ rows, metric, mode, keyword, keywords, entity, rolloutWeek
   );
 }
 
+function ReviewDashboard({
+  jobRows,
+  storeRows,
+  sourceStatus,
+  sourceMessage,
+  card,
+  T,
+  selectStyle,
+}) {
+  const [granularity, setGranularity] = useState("week");
+  const [selectedMarket, setSelectedMarket] = useState("all");
+  const [selectedListing, setSelectedListing] = useState("all");
+  const colors = marketColors(T);
+
+  const markets = useMemo(() => [...new Set([
+    ...jobRows.map((row) => row.market),
+    ...storeRows.map((row) => row.market),
+  ].filter(Boolean))].sort(), [jobRows, storeRows]);
+
+  const jobMarkets = useMemo(() =>
+    [...new Set(jobRows.map((row) => row.market).filter(Boolean))].sort(),
+    [jobRows]
+  );
+
+  const storeMarkets = useMemo(() =>
+    [...new Set(storeRows.map((row) => row.market).filter(Boolean))].sort(),
+    [storeRows]
+  );
+
+  useEffect(() => {
+    setSelectedListing("all");
+  }, [selectedMarket]);
+
+  const jobChartData = useMemo(() => {
+    const buckets = {};
+
+    jobRows.forEach((row) => {
+      const period = row[granularity];
+      if (!period) return;
+      const bucket = buckets[period] ||= { reviews: 0, jobs: 0, markets: {} };
+      bucket.reviews += row.reviews;
+      bucket.jobs += row.completedJobs;
+      const market = bucket.markets[row.market] ||= { reviews: 0, jobs: 0 };
+      market.reviews += row.reviews;
+      market.jobs += row.completedJobs;
+    });
+
+    return Object.entries(buckets)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([period, bucket]) => {
+        const item = {
+          week: shortPeriod(period, granularity),
+          fullWeek: period,
+          Total: bucket.jobs ? +((bucket.reviews / bucket.jobs) * 100).toFixed(2) : null,
+        };
+        markets.forEach((market) => {
+          const marketBucket = bucket.markets[market];
+          item[market] = marketBucket?.jobs
+            ? +((marketBucket.reviews / marketBucket.jobs) * 100).toFixed(2)
+            : null;
+        });
+        return item;
+      });
+  }, [jobRows, granularity, markets]);
+
+  const reviewChartData = useMemo(() => {
+    const buckets = {};
+
+    storeRows.forEach((row) => {
+      const period = row[granularity];
+      if (!period) return;
+      const bucket = buckets[period] ||= { total: 0, markets: {} };
+      bucket.total += row.reviews;
+      bucket.markets[row.market] = (bucket.markets[row.market] || 0) + row.reviews;
+    });
+
+    return Object.entries(buckets)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([period, bucket]) => {
+        const item = {
+          week: shortPeriod(period, granularity),
+          fullWeek: period,
+          Total: bucket.total,
+        };
+        markets.forEach((market) => { item[market] = bucket.markets[market] || 0; });
+        return item;
+      });
+  }, [storeRows, granularity, markets]);
+
+  const listings = useMemo(() => {
+    const byListing = {};
+    storeRows
+      .filter((row) => selectedMarket === "all" || row.market === selectedMarket)
+      .forEach((row) => {
+        const item = byListing[row.listing] ||= {
+          id: row.listing,
+          storeCode: row.storeCode,
+          address: row.address,
+          market: row.market,
+          reviews: 0,
+        };
+        item.reviews += row.reviews;
+      });
+
+    return Object.values(byListing).sort((a, b) =>
+      b.reviews - a.reviews || a.storeCode.localeCompare(b.storeCode)
+    );
+  }, [storeRows, selectedMarket]);
+
+  const plottedListings = selectedListing === "all"
+    ? listings.slice(0, 8)
+    : listings.filter((item) => item.id === selectedListing);
+
+  const listingSeries = plottedListings.map((item, index) => ({
+    key: `listing:${item.id}`,
+    label: `${item.storeCode} · ${item.market}`,
+    color: colors[index % colors.length],
+    width: 2.5,
+    radius: 3,
+  }));
+
+  const listingChartData = useMemo(() => {
+    const scoped = storeRows.filter((row) =>
+      (selectedMarket === "all" || row.market === selectedMarket) &&
+      plottedListings.some((item) => item.id === row.listing)
+    );
+    const buckets = {};
+
+    scoped.forEach((row) => {
+      const period = row[granularity];
+      if (!period) return;
+      const bucket = buckets[period] ||= {};
+      bucket[row.listing] = (bucket[row.listing] || 0) + row.reviews;
+    });
+
+    return Object.entries(buckets)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([period, bucket]) => {
+        const item = { week: shortPeriod(period, granularity), fullWeek: period };
+        plottedListings.forEach((listing) => {
+          item[`listing:${listing.id}`] = bucket[listing.id] || 0;
+        });
+        return item;
+      });
+  }, [storeRows, granularity, selectedMarket, selectedListing, listings]);
+
+  const makeMarketSeries = (availableMarkets) => [
+    { key: "Total", label: "Total", color: T.ink, width: 3.5, radius: 4 },
+    ...(selectedMarket === "all"
+      ? availableMarkets
+      : availableMarkets.includes(selectedMarket) ? [selectedMarket] : []
+    ).map((market, index) => ({
+      key: market,
+      label: market,
+      color: colors[index % colors.length],
+      width: 2,
+      radius: 2.75,
+    })),
+  ];
+
+  const jobMarketSeries = makeMarketSeries(jobMarkets);
+  const reviewMarketSeries = makeMarketSeries(storeMarkets);
+  const rateScale = chartScale(jobChartData, jobMarketSeries);
+  const reviewScale = chartScale(reviewChartData, reviewMarketSeries);
+  const listingScale = chartScale(listingChartData, listingSeries);
+  const latestRate = jobChartData[jobChartData.length - 1];
+  const latestReviews = reviewChartData[reviewChartData.length - 1];
+  const periodLabel = granularity === "week" ? "week" : "month";
+
+  const heading = (title, detail) => (
+    <div style={{ padding: "0 18px 8px 20px" }}>
+      <div style={{
+        fontFamily: "'Barlow Condensed'",
+        fontWeight: 600,
+        fontSize: 18,
+        textTransform: "uppercase",
+        letterSpacing: 0.8,
+        color: T.ink,
+      }}>
+        {title}
+      </div>
+      <div style={{ color: T.faint, fontSize: 12, marginTop: 3 }}>{detail}</div>
+    </div>
+  );
+
+  const miniKpi = (label, value, detail, color) => (
+    <div style={card}>
+      <div style={{ color: T.dim, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>{label}</div>
+      <div className="kpi-num" style={{ color, marginTop: 7 }}>{value}</div>
+      <div style={{ color: T.faint, fontSize: 12, marginTop: 5 }}>{detail}</div>
+    </div>
+  );
+
+  if (sourceStatus === "error" && !jobRows.length && !storeRows.length) {
+    return (
+      <div style={{ ...card, marginTop: 14, color: T.red, lineHeight: 1.6 }}>
+        {sourceMessage}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{
+        ...card,
+        marginTop: 14,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 14,
+        flexWrap: "wrap",
+      }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 15 }}>Review reporting</div>
+          <div style={{ color: T.faint, fontSize: 12, marginTop: 3 }}>
+            Compare total performance with every market, then drill into individual listings.
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", background: T.panelSoft, border: `1px solid ${T.line}`, borderRadius: 8, overflow: "hidden" }}>
+            {["week", "month"].map((item) => (
+              <button
+                key={item}
+                onClick={() => setGranularity(item)}
+                aria-pressed={granularity === item}
+                style={{
+                  background: granularity === item ? T.teal : "transparent",
+                  color: granularity === item ? T.onAccent : T.dim,
+                  border: "none",
+                  padding: "7px 16px",
+                  fontWeight: 600,
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                {item === "week" ? "Weekly" : "Monthly"}
+              </button>
+            ))}
+          </div>
+
+          <label style={{ color: T.dim, fontSize: 13 }}>
+            Market focus
+            <select
+              value={selectedMarket}
+              onChange={(event) => setSelectedMarket(event.target.value)}
+              style={selectStyle}
+            >
+              <option value="all">Total + all markets</option>
+              {markets.map((market) => <option key={market} value={market}>{market}</option>)}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginTop: 12 }}>
+        {miniKpi(
+          `Latest ${periodLabel} review rate`,
+          Number.isFinite(latestRate?.Total) ? `${latestRate.Total}%` : "—",
+          `${latestRate?.week || "—"} · reviews per 100 completed jobs`,
+          T.teal
+        )}
+        {miniKpi(
+          `Latest ${periodLabel} reviews`,
+          Number.isFinite(latestReviews?.Total) ? latestReviews.Total.toLocaleString() : "—",
+          `${latestReviews?.week || "—"} · store review source`,
+          T.amber
+        )}
+        {miniKpi(
+          "Listings in scope",
+          listings.length.toLocaleString(),
+          selectedMarket === "all" ? "all markets" : selectedMarket,
+          T.blue
+        )}
+      </div>
+
+      <div style={{ ...card, padding: "18px 8px 8px 0", marginTop: 12 }}>
+        {heading(
+          `Reviews per completed job · by ${periodLabel}`,
+          "Percentage of completed jobs that generated a review. The bold line is the company total."
+        )}
+        <SvgLineChart
+          data={jobChartData}
+          series={jobMarketSeries}
+          domain={rateScale.domain}
+          ticks={rateScale.ticks}
+          percent
+          T={T}
+          height={310}
+        />
+      </div>
+
+      <div style={{ ...card, padding: "18px 8px 8px 0", marginTop: 12 }}>
+        {heading(
+          `Reviews per ${periodLabel} · total and by market`,
+          "Store-review volume, with the company total shown against each market."
+        )}
+        <SvgLineChart
+          data={reviewChartData}
+          series={reviewMarketSeries}
+          domain={reviewScale.domain}
+          ticks={reviewScale.ticks}
+          T={T}
+          height={310}
+        />
+      </div>
+
+      <div style={{ ...card, padding: "18px 8px 8px 0", marginTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", paddingRight: 18 }}>
+          {heading(
+            `Reviews per ${periodLabel} · per listing`,
+            selectedListing === "all"
+              ? "Top 8 listings by review volume in the selected market scope."
+              : "Showing one listing across the full available timeline."
+          )}
+          <label style={{ color: T.dim, fontSize: 13 }}>
+            Listing
+            <select
+              value={selectedListing}
+              onChange={(event) => setSelectedListing(event.target.value)}
+              style={{ ...selectStyle, maxWidth: 430 }}
+            >
+              <option value="all">Top 8 listings</option>
+              {listings.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.storeCode} · {item.market} · {item.address || "No address"}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {listingSeries.length ? (
+          <SvgLineChart
+            data={listingChartData}
+            series={listingSeries}
+            domain={listingScale.domain}
+            ticks={listingScale.ticks}
+            T={T}
+            height={320}
+          />
+        ) : (
+          <div style={{ color: T.faint, padding: "24px 20px" }}>No listing review rows are available for this selection.</div>
+        )}
+      </div>
+
+      <div style={{ color: T.faint, fontSize: 12, marginTop: 14, lineHeight: 1.6 }}>
+        Review rate uses the reviews and completed jobs in the job-level daily source. Review volume and listing trends use the store-review daily source. Monthly values are summed into calendar months; weekly values use each source’s supplied week.
+      </div>
+    </div>
+  );
+}
+
 function RankTracker() {
   const [themeName, setThemeName] = useState("light");
   const T = THEMES[themeName];
@@ -536,6 +977,11 @@ function RankTracker() {
   const [rows, setRows] = useState([]);
   const [sourceStatus, setSourceStatus] = useState("loading");
   const [sourceMessage, setSourceMessage] = useState("Loading the hosted weekly JSON…");
+  const [reviewJobRows, setReviewJobRows] = useState([]);
+  const [storeReviewRows, setStoreReviewRows] = useState([]);
+  const [reviewSourceStatus, setReviewSourceStatus] = useState("loading");
+  const [reviewSourceMessage, setReviewSourceMessage] = useState("Loading the hosted review JSON…");
+  const [sectionTab, setSectionTab] = useState("rankings");
   const [rolloutWeek, setRolloutWeek] = useState("");
   const [mode, setMode] = useState("avgRanked");
   const [tab, setTab] = useState("pack");
@@ -607,8 +1053,59 @@ function RankTracker() {
     }
   };
 
+  const loadReviewData = async () => {
+    setReviewSourceStatus("loading");
+    setReviewSourceMessage("Loading the hosted review JSON…");
+
+    try {
+      const cacheBuster = Date.now();
+      const [jobResponse, storeResponse] = await Promise.all([
+        fetch(`${REVIEW_JOB_DATA_URL}?v=${cacheBuster}`, { cache: "no-store" }),
+        fetch(`${STORE_REVIEW_DATA_URL}?v=${cacheBuster}`, { cache: "no-store" }),
+      ]);
+
+      if (!jobResponse.ok || !storeResponse.ok) {
+        throw new Error(
+          `Review source request failed (${jobResponse.status}/${storeResponse.status}).`
+        );
+      }
+
+      const [jobPayload, storePayload] = await Promise.all([
+        jobResponse.json(),
+        storeResponse.json(),
+      ]);
+      const normalizedJobs = normalizeReviewJobPayload(jobPayload);
+      const normalizedStores = normalizeStoreReviewPayload(storePayload);
+
+      if (!normalizedJobs.length || !normalizedStores.length) {
+        throw new Error(
+          `Expected review fields were not found (${normalizedJobs.length} job rows, ${normalizedStores.length} store rows).`
+        );
+      }
+
+      setReviewJobRows(normalizedJobs);
+      setStoreReviewRows(normalizedStores);
+      setReviewSourceStatus("loaded");
+      setReviewSourceMessage(
+        `Live review JSON loaded · ${normalizedJobs.length.toLocaleString()} job rows · ` +
+        `${normalizedStores.length.toLocaleString()} store rows · ` +
+        `${new Set(normalizedStores.map((row) => row.listing)).size.toLocaleString()} listings`
+      );
+    } catch (error) {
+      console.error(error);
+      setReviewJobRows([]);
+      setStoreReviewRows([]);
+      setReviewSourceStatus("error");
+      setReviewSourceMessage(
+        `Could not load the hosted review JSON: ${error.message} ` +
+        `Open this dashboard through a web server or GitHub Pages, then verify CORS and the field names.`
+      );
+    }
+  };
+
   useEffect(() => {
     loadHostedData();
+    loadReviewData();
   }, []);
 
   const keywords = useMemo(
@@ -823,9 +1320,10 @@ function RankTracker() {
     marginLeft: 6,
   };
 
+  const activeStatus = sectionTab === "reviews" ? reviewSourceStatus : sourceStatus;
   const statusColor =
-    sourceStatus === "loaded" ? T.teal :
-    sourceStatus === "error" ? T.red :
+    activeStatus === "loaded" ? T.teal :
+    activeStatus === "error" ? T.red :
     T.amber;
 
   return (
@@ -859,10 +1357,12 @@ function RankTracker() {
               letterSpacing: 0.5,
               textTransform: "uppercase",
             }}>
-              Local Search <span style={{ color: T.amber }}>Performance</span>
+              Local Search &amp; <span style={{ color: T.amber }}>Reviews</span>
             </div>
             <div style={{ color: T.dim, fontSize: 13, marginTop: 2 }}>
-              Local pack & organic first-match position · Google Desktop · lower is better
+              {sectionTab === "rankings"
+                ? "Local pack & organic first-match position · Google Desktop · lower is better"
+                : "Review generation, market performance, and listing-level trends"}
             </div>
           </div>
 
@@ -883,7 +1383,10 @@ function RankTracker() {
             </button>
 
             <button
-              onClick={loadHostedData}
+              onClick={() => {
+                loadHostedData();
+                loadReviewData();
+              }}
               style={{
                 background: T.panelSoft,
                 color: T.ink,
@@ -895,24 +1398,26 @@ function RankTracker() {
                 cursor: "pointer",
               }}
             >
-              Refresh JSON
+              Refresh data
             </button>
 
-            <button
-              onClick={() => fileRef.current?.click()}
-              style={{
-                background: T.amber,
-                color: T.btnText,
-                border: "none",
-                borderRadius: 8,
-                padding: "9px 16px",
-                fontWeight: 600,
-                fontSize: 14,
-                cursor: "pointer",
-              }}
-            >
-              Add weekly CSV
-            </button>
+            {sectionTab === "rankings" && (
+              <button
+                onClick={() => fileRef.current?.click()}
+                style={{
+                  background: T.amber,
+                  color: T.btnText,
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "9px 16px",
+                  fontWeight: 600,
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                Add weekly CSV
+              </button>
+            )}
           </div>
 
           <input
@@ -924,9 +1429,43 @@ function RankTracker() {
           />
         </div>
 
+        <div
+          role="tablist"
+          aria-label="Dashboard sections"
+          style={{
+            display: "flex",
+            gap: 4,
+            marginTop: 22,
+            borderBottom: `1px solid ${T.line}`,
+          }}
+        >
+          {[
+            { key: "rankings", label: "Search rankings" },
+            { key: "reviews", label: "Reviews" },
+          ].map((item) => (
+            <button
+              key={item.key}
+              role="tab"
+              aria-selected={sectionTab === item.key}
+              onClick={() => setSectionTab(item.key)}
+              style={{
+                background: "transparent",
+                color: sectionTab === item.key ? T.ink : T.dim,
+                border: "none",
+                borderBottom: `3px solid ${sectionTab === item.key ? T.amber : "transparent"}`,
+                padding: "10px 16px 9px",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
         <div style={{
           ...card,
-          marginTop: 14,
+          marginTop: 12,
           padding: "10px 14px",
           display: "flex",
           justifyContent: "space-between",
@@ -935,18 +1474,30 @@ function RankTracker() {
           flexWrap: "wrap",
         }}>
           <div style={{ fontSize: 13, color: statusColor }}>
-            {sourceMessage}
+            {sectionTab === "reviews" ? reviewSourceMessage : sourceMessage}
           </div>
-          <a
-            href={RAW_DATA_URL}
-            target="_blank"
-            rel="noreferrer"
-            style={{ color: T.blue, fontSize: 12, wordBreak: "break-all" }}
-          >
-            Open raw JSON
-          </a>
+          {sectionTab === "reviews" ? (
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <a href={REVIEW_JOB_DATA_URL} target="_blank" rel="noreferrer" style={{ color: T.blue, fontSize: 12 }}>
+                Job review data
+              </a>
+              <a href={STORE_REVIEW_DATA_URL} target="_blank" rel="noreferrer" style={{ color: T.blue, fontSize: 12 }}>
+                Store review data
+              </a>
+            </div>
+          ) : (
+            <a
+              href={RAW_DATA_URL}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: T.blue, fontSize: 12, wordBreak: "break-all" }}
+            >
+              Open raw JSON
+            </a>
+          )}
         </div>
 
+        <div style={{ display: sectionTab === "rankings" ? "block" : "none" }} aria-hidden={sectionTab !== "rankings"}>
         {note && (
           <div style={{ marginTop: 10, fontSize: 13, color: T.teal }}>
             {note}
@@ -1470,6 +2021,19 @@ function RankTracker() {
           A position of 0 means no first match, so the default average uses ranked rows only
           and reports non-appearances separately through match rate. CSV uploads are temporary
           and remain in the current browser session only.
+        </div>
+        </div>
+
+        <div style={{ display: sectionTab === "reviews" ? "block" : "none" }} aria-hidden={sectionTab !== "reviews"}>
+          <ReviewDashboard
+            jobRows={reviewJobRows}
+            storeRows={storeReviewRows}
+            sourceStatus={reviewSourceStatus}
+            sourceMessage={reviewSourceMessage}
+            card={card}
+            T={T}
+            selectStyle={selectStyle}
+          />
         </div>
       </div>
     </div>

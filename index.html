@@ -13,7 +13,6 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js'"></script>
 
   <style>
     * { box-sizing: border-box; }
@@ -51,12 +50,11 @@
 </div>
 
 <script type="text/babel">
-if (!window.React || !window.ReactDOM || !window.Babel || !window.Recharts) {
+if (!window.React || !window.ReactDOM || !window.Babel) {
   const missing = [
     !window.React && "React",
     !window.ReactDOM && "ReactDOM",
     !window.Babel && "Babel",
-    !window.Recharts && "Recharts",
   ].filter(Boolean).join(", ");
 
   document.getElementById("root").innerHTML = `
@@ -68,11 +66,6 @@ if (!window.React || !window.ReactDOM || !window.Babel || !window.Recharts) {
     </div>`;
   throw new Error(`Missing browser libraries: ${missing}`);
 }
-
-const {
-  ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ReferenceLine, ResponsiveContainer, Legend
-} = window.Recharts;
 
 const { useEffect, useMemo, useRef, useState } = React;
 
@@ -265,11 +258,151 @@ function weeklySummary(rows, metric, keyword, entity) {
     .sort((a, b) => sortKey(a.week) - sortKey(b.week));
 }
 
+
+function SvgLineChart({
+  data,
+  series,
+  domain = [0, 100],
+  ticks = [],
+  reversed = false,
+  percent = false,
+  rolloutWeek = "",
+  T,
+  height = 260,
+}) {
+  const width = 900;
+  const margin = { top: 30, right: 24, bottom: 46, left: 58 };
+  const plotW = width - margin.left - margin.right;
+  const plotH = height - margin.top - margin.bottom;
+  const [minY, maxY] = domain;
+  const x = (i) => margin.left + (data.length <= 1 ? plotW / 2 : (i / (data.length - 1)) * plotW);
+  const y = (value) => {
+    const pct = (value - minY) / Math.max(0.0001, maxY - minY);
+    return reversed
+      ? margin.top + pct * plotH
+      : margin.top + (1 - pct) * plotH;
+  };
+
+  const makePath = (key) => {
+    let d = "";
+    let started = false;
+    data.forEach((row, i) => {
+      const v = row[key];
+      if (!Number.isFinite(v)) {
+        started = false;
+        return;
+      }
+      d += `${started ? " L" : "M"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`;
+      started = true;
+    });
+    return d;
+  };
+
+  const rolloutIndex = rolloutWeek
+    ? data.findIndex((row) => row.fullWeek === rolloutWeek)
+    : -1;
+
+  const xTickStep = Math.max(1, Math.ceil(data.length / 8));
+
+  return (
+    <div style={{ width: "100%", overflowX: "auto" }}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ width: "100%", minWidth: 620, display: "block" }}>
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} stroke={T.line} strokeDasharray="3 6" />
+            <text x={margin.left - 10} y={y(tick) + 4} textAnchor="end" fontSize="11" fill={T.dim}>
+              {tick}{percent ? "%" : ""}
+            </text>
+          </g>
+        ))}
+
+        <line x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} stroke={T.faint} />
+        <line x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} stroke={T.faint} />
+
+        {data.map((row, i) => i % xTickStep === 0 || i === data.length - 1 ? (
+          <text key={`${row.week}-${i}`} x={x(i)} y={height - 18} textAnchor="middle" fontSize="11" fill={T.dim}>
+            {row.week}
+          </text>
+        ) : null)}
+
+        {rolloutIndex >= 0 && (
+          <g>
+            <line x1={x(rolloutIndex)} x2={x(rolloutIndex)} y1={margin.top} y2={height - margin.bottom} stroke={T.teal} strokeDasharray="4 4" />
+            <text x={x(rolloutIndex) + 5} y={18} fontSize="11" fill={T.teal}>listing changes</text>
+          </g>
+        )}
+
+        {series.map((item) => (
+          <g key={item.key}>
+            <path d={makePath(item.key)} fill="none" stroke={item.color} strokeWidth={item.width || 2.5} strokeDasharray={item.dashed ? "6 4" : undefined} />
+            {data.map((row, i) => {
+              const v = row[item.key];
+              if (!Number.isFinite(v)) return null;
+              return (
+                <circle key={`${item.key}-${i}`} cx={x(i)} cy={y(v)} r={item.radius || 3.5} fill={item.color} stroke={T.bg} strokeWidth="1.5">
+                  <title>{`${row.fullWeek || row.week} · ${item.label}: ${v}${percent ? "%" : ""}`}</title>
+                </circle>
+              );
+            })}
+          </g>
+        ))}
+      </svg>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", padding: "0 18px 8px 58px", fontSize: 11, color: T.dim }}>
+        {series.map((item) => (
+          <span key={item.key} style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+            <span style={{ width: 18, borderTop: `${item.width || 2}px ${item.dashed ? "dashed" : "solid"} ${item.color}` }} />
+            {item.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SvgBarChart({ data, dataKey, domain = [0, 100], ticks = [0, 25, 50, 75, 100], color, percent = false, T, height = 220 }) {
+  const width = 900;
+  const margin = { top: 22, right: 24, bottom: 46, left: 58 };
+  const plotW = width - margin.left - margin.right;
+  const plotH = height - margin.top - margin.bottom;
+  const [minY, maxY] = domain;
+  const y = (value) => margin.top + (1 - (value - minY) / Math.max(0.0001, maxY - minY)) * plotH;
+  const band = data.length ? plotW / data.length : plotW;
+  const barW = Math.min(48, Math.max(8, band * 0.55));
+  const xTickStep = Math.max(1, Math.ceil(data.length / 8));
+
+  return (
+    <div style={{ width: "100%", overflowX: "auto" }}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ width: "100%", minWidth: 620, display: "block" }}>
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} stroke={T.line} strokeDasharray="3 6" />
+            <text x={margin.left - 10} y={y(tick) + 4} textAnchor="end" fontSize="11" fill={T.dim}>{tick}{percent ? "%" : ""}</text>
+          </g>
+        ))}
+        <line x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} stroke={T.faint} />
+        {data.map((row, i) => {
+          const v = Number.isFinite(row[dataKey]) ? row[dataKey] : 0;
+          const bx = margin.left + i * band + (band - barW) / 2;
+          const by = y(v);
+          return (
+            <g key={`${row.week}-${i}`}>
+              <rect x={bx} y={by} width={barW} height={Math.max(0, height - margin.bottom - by)} rx="4" fill={color}>
+                <title>{`${row.fullWeek || row.week}: ${v}${percent ? "%" : ""}`}</title>
+              </rect>
+              {(i % xTickStep === 0 || i === data.length - 1) && (
+                <text x={bx + barW / 2} y={height - 18} textAnchor="middle" fontSize="11" fill={T.dim}>{row.week}</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function KeywordTrends({ rows, mode, keywords, entity, rolloutWeek, card, T }) {
   const colors = kwColors(T);
-  const allWeeks = [...new Set(rows.map((row) => row.week))]
-    .sort((a, b) => sortKey(a) - sortKey(b));
-
+  const allWeeks = [...new Set(rows.map((row) => row.week))].sort((a, b) => sortKey(a) - sortKey(b));
   const series = {};
   keywords.forEach((keyword) => {
     series[keyword] = {
@@ -283,12 +416,8 @@ function KeywordTrends({ rows, mode, keywords, entity, rolloutWeek, card, T }) {
     keywords.forEach((keyword) => {
       const pack = series[keyword].pack.find((x) => x.week === week);
       const organic = series[keyword].organic.find((x) => x.week === week);
-      item[`${keyword} · pack`] = pack
-        ? (mode === "avgRanked" ? pack.avgRanked : pack.avgAll)
-        : null;
-      item[`${keyword} · organic`] = organic
-        ? (mode === "avgRanked" ? organic.avgRanked : organic.avgAll)
-        : null;
+      item[`${keyword} · pack`] = pack ? (mode === "avgRanked" ? pack.avgRanked : pack.avgAll) : null;
+      item[`${keyword} · organic`] = organic ? (mode === "avgRanked" ? organic.avgRanked : organic.avgAll) : null;
     });
     return item;
   });
@@ -304,294 +433,95 @@ function KeywordTrends({ rows, mode, keywords, entity, rolloutWeek, card, T }) {
     return item;
   });
 
-  const rolloutIndex = positionData.findIndex((item) => item.fullWeek === rolloutWeek);
+  const chartSeries = keywords.flatMap((keyword, index) => [
+    { key: `${keyword} · pack`, label: `${keyword} · pack`, color: colors[index % colors.length], width: 2.5 },
+    { key: `${keyword} · organic`, label: `${keyword} · organic`, color: colors[index % colors.length], dashed: true, width: 2 },
+  ]);
+
   const heading = (text) => (
-    <div style={{
-      paddingLeft: 20, fontFamily: "'Barlow Condensed'", fontWeight: 600,
-      fontSize: 17, textTransform: "uppercase", letterSpacing: 0.8, color: T.dim,
-    }}>
-      {text}
-    </div>
+    <div style={{ paddingLeft: 20, fontFamily: "'Barlow Condensed'", fontWeight: 600, fontSize: 17, textTransform: "uppercase", letterSpacing: 0.8, color: T.dim }}>{text}</div>
   );
-
-  const tooltipStyle = {
-    background: T.panel,
-    border: `1px solid ${T.line}`,
-    borderRadius: 8,
-    color: T.ink,
-  };
-
-  const rolloutLine = rolloutIndex >= 0 ? (
-    <ReferenceLine
-      x={positionData[rolloutIndex].week}
-      stroke={T.teal}
-      strokeDasharray="4 4"
-      label={{
-        value: "listing changes",
-        fill: T.teal,
-        fontSize: 11,
-        position: "top",
-      }}
-    />
-  ) : null;
-
-  const chartLines = () =>
-    keywords.flatMap((keyword, index) => [
-      <Line
-        key={`${keyword}-pack`}
-        type="monotone"
-        dataKey={`${keyword} · pack`}
-        stroke={colors[index % colors.length]}
-        strokeWidth={2.5}
-        dot={{ r: 4 }}
-        connectNulls
-      />,
-      <Line
-        key={`${keyword}-organic`}
-        type="monotone"
-        dataKey={`${keyword} · organic`}
-        stroke={colors[index % colors.length]}
-        strokeWidth={2}
-        strokeDasharray="6 4"
-        dot={{ r: 3 }}
-        connectNulls
-      />,
-    ]);
 
   if (!keywords.length) return null;
 
   return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-      gap: 12,
-      marginTop: 12,
-    }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, marginTop: 12 }}>
       <div style={{ ...card, padding: "18px 8px 8px 0" }}>
         {heading("Position trend by keyword (solid = pack, dashed = organic)")}
-        <ResponsiveContainer width="100%" height={260}>
-          <ComposedChart data={positionData} margin={{ top: 16, right: 20, left: 0, bottom: 4 }}>
-            <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
-            <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
-            <YAxis
-              reversed
-              domain={[0, 10]}
-              ticks={[1, 3, 5, 7, 9]}
-              stroke={T.faint}
-              tick={{ fill: T.dim, fontSize: 12 }}
-              label={{
-                value: "position",
-                angle: -90,
-                position: "insideLeft",
-                fill: T.faint,
-                fontSize: 11,
-              }}
-            />
-            <Tooltip contentStyle={tooltipStyle} />
-            <Legend wrapperStyle={{ fontSize: 11, color: T.dim }} />
-            {rolloutLine}
-            {chartLines()}
-          </ComposedChart>
-        </ResponsiveContainer>
+        <SvgLineChart data={positionData} series={chartSeries} domain={[0, 10]} ticks={[1, 3, 5, 7, 9]} reversed rolloutWeek={rolloutWeek} T={T} />
       </div>
-
       <div style={{ ...card, padding: "18px 8px 8px 0" }}>
         {heading("Match rate trend by keyword (solid = pack, dashed = organic)")}
-        <ResponsiveContainer width="100%" height={260}>
-          <ComposedChart data={rateData} margin={{ top: 16, right: 20, left: 0, bottom: 4 }}>
-            <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
-            <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
-            <YAxis
-              domain={[0, 100]}
-              stroke={T.faint}
-              tick={{ fill: T.dim, fontSize: 12 }}
-              unit="%"
-            />
-            <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
-            <Legend wrapperStyle={{ fontSize: 11, color: T.dim }} />
-            {rolloutLine}
-            {chartLines()}
-          </ComposedChart>
-        </ResponsiveContainer>
+        <SvgLineChart data={rateData} series={chartSeries} domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} percent rolloutWeek={rolloutWeek} T={T} />
       </div>
     </div>
   );
 }
 
-function TrendPanel({
-  rows, metric, mode, keyword, keywords, entity, rolloutWeek, card, T
-}) {
+function TrendPanel({ rows, metric, mode, keyword, keywords, entity, rolloutWeek, card, T }) {
   const meta = metricMeta(T)[metric];
   const colors = kwColors(T);
   const main = weeklySummary(rows, metric, keyword, entity);
   const perKeyword = {};
-
-  keywords.forEach((item) => {
-    perKeyword[item] = weeklySummary(rows, metric, item, entity);
-  });
-
-  const allWeeks = [...new Set(rows.map((row) => row.week))]
-    .sort((a, b) => sortKey(a) - sortKey(b));
+  keywords.forEach((item) => { perKeyword[item] = weeklySummary(rows, metric, item, entity); });
+  const allWeeks = [...new Set(rows.map((row) => row.week))].sort((a, b) => sortKey(a) - sortKey(b));
 
   const chartData = allWeeks.map((week) => {
     const mainWeek = main.find((item) => item.week === week);
     const item = {
       week: week.slice(0, 5),
       fullWeek: week,
-      position: mainWeek
-        ? (mode === "avgRanked" ? mainWeek.avgRanked : mainWeek.avgAll)
-        : null,
+      position: mainWeek ? (mode === "avgRanked" ? mainWeek.avgRanked : mainWeek.avgAll) : null,
       matchRate: mainWeek?.matchRate ?? null,
       n: mainWeek?.n ?? 0,
     };
-
     keywords.forEach((keywordItem) => {
       const keywordWeek = perKeyword[keywordItem].find((x) => x.week === week);
-      item[keywordItem] = keywordWeek
-        ? (mode === "avgRanked" ? keywordWeek.avgRanked : keywordWeek.avgAll)
-        : null;
+      item[keywordItem] = keywordWeek ? (mode === "avgRanked" ? keywordWeek.avgRanked : keywordWeek.avgAll) : null;
     });
     return item;
   });
 
-  const rolloutIndex = chartData.findIndex((item) => item.fullWeek === rolloutWeek);
   const keywordLabel = keyword === "all" ? "all keywords" : `"${keyword}"`;
-
   const heading = (text) => (
-    <div style={{
-      paddingLeft: 20, fontFamily: "'Barlow Condensed'", fontWeight: 600,
-      fontSize: 17, textTransform: "uppercase", letterSpacing: 0.8, color: T.dim,
-    }}>
-      {text}
-    </div>
+    <div style={{ paddingLeft: 20, fontFamily: "'Barlow Condensed'", fontWeight: 600, fontSize: 17, textTransform: "uppercase", letterSpacing: 0.8, color: T.dim }}>{text}</div>
   );
-
-  const tooltipStyle = {
-    background: T.panel,
-    border: `1px solid ${T.line}`,
-    borderRadius: 8,
-    color: T.ink,
-  };
 
   return (
     <>
       <div style={{ ...card, padding: "18px 8px 8px 0", marginTop: 12 }}>
         {heading(`${meta.label} — weekly average position (${keywordLabel})`)}
-        <ResponsiveContainer width="100%" height={280}>
-          <ComposedChart data={chartData} margin={{ top: 16, right: 24, left: 0, bottom: 4 }}>
-            <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
-            <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
-            <YAxis
-              reversed
-              domain={meta.domain}
-              ticks={meta.ticks}
-              stroke={T.faint}
-              tick={{ fill: T.dim, fontSize: 12 }}
-              label={{
-                value: "position",
-                angle: -90,
-                position: "insideLeft",
-                fill: T.faint,
-                fontSize: 11,
-              }}
-            />
-            <Tooltip
-              contentStyle={tooltipStyle}
-              formatter={(value, name) => [
-                value,
-                name === "position" ? "avg position" : name,
-              ]}
-              labelFormatter={(label, payload) => {
-                const data = payload?.[0]?.payload;
-                return data
-                  ? `${data.fullWeek} · ${data.n} row${data.n === 1 ? "" : "s"}`
-                  : label;
-              }}
-            />
-            {rolloutIndex >= 0 && (
-              <ReferenceLine
-                x={chartData[rolloutIndex].week}
-                stroke={T.teal}
-                strokeDasharray="4 4"
-                label={{
-                  value: "listing changes",
-                  fill: T.teal,
-                  fontSize: 11,
-                  position: "top",
-                }}
-              />
-            )}
-            <Line
-              type="monotone"
-              dataKey="position"
-              stroke={meta.color}
-              strokeWidth={3}
-              dot={{ r: 5, fill: meta.color, stroke: T.bg, strokeWidth: 2 }}
-              connectNulls
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
+        <SvgLineChart
+          data={chartData}
+          series={[{ key: "position", label: "avg position", color: meta.color, width: 3, radius: 4.5 }]}
+          domain={meta.domain}
+          ticks={meta.ticks}
+          reversed
+          rolloutWeek={rolloutWeek}
+          T={T}
+          height={280}
+        />
       </div>
 
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-        gap: 12,
-        marginTop: 12,
-      }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, marginTop: 12 }}>
         {keyword === "all" && (
           <div style={{ ...card, padding: "18px 8px 8px 0" }}>
             {heading("Keyword comparison")}
-            <ResponsiveContainer width="100%" height={220}>
-              <ComposedChart data={chartData} margin={{ top: 14, right: 20, left: 0, bottom: 4 }}>
-                <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
-                <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
-                <YAxis
-                  reversed
-                  domain={meta.domain}
-                  ticks={meta.ticks}
-                  stroke={T.faint}
-                  tick={{ fill: T.dim, fontSize: 12 }}
-                />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 12, color: T.dim }} />
-                {keywords.map((keywordItem, index) => (
-                  <Line
-                    key={keywordItem}
-                    type="monotone"
-                    dataKey={keywordItem}
-                    stroke={colors[index % colors.length]}
-                    strokeWidth={2}
-                    dot={{ r: 4 }}
-                    connectNulls
-                  />
-                ))}
-              </ComposedChart>
-            </ResponsiveContainer>
+            <SvgLineChart
+              data={chartData}
+              series={keywords.map((keywordItem, index) => ({ key: keywordItem, label: keywordItem, color: colors[index % colors.length], width: 2 }))}
+              domain={meta.domain}
+              ticks={meta.ticks}
+              reversed
+              T={T}
+              height={220}
+            />
           </div>
         )}
 
         <div style={{ ...card, padding: "18px 8px 8px 0" }}>
           {heading(`Match rate — ${keywordLabel}`)}
-          <ResponsiveContainer width="100%" height={220}>
-            <ComposedChart data={chartData} margin={{ top: 14, right: 20, left: 0, bottom: 4 }}>
-              <CartesianGrid stroke={T.line} strokeDasharray="3 6" vertical={false} />
-              <XAxis dataKey="week" stroke={T.faint} tick={{ fill: T.dim, fontSize: 12 }} />
-              <YAxis
-                domain={[0, 100]}
-                stroke={T.faint}
-                tick={{ fill: T.dim, fontSize: 12 }}
-                unit="%"
-              />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Bar
-                dataKey="matchRate"
-                fill={meta.color}
-                radius={[4, 4, 0, 0]}
-                maxBarSize={48}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
+          <SvgBarChart data={chartData} dataKey="matchRate" domain={[0, 100]} color={meta.color} percent T={T} height={220} />
         </div>
       </div>
     </>
@@ -1536,7 +1466,7 @@ function RankTracker() {
           marginTop: 14,
           lineHeight: 1.6,
         }}>
-          The dashboard loads its base data from the hosted weekly JSON on each page load.
+          The dashboard loads its base data from the hosted weekly JSON on each page load. Charts are rendered with built-in SVG and do not require Recharts.
           A position of 0 means no first match, so the default average uses ranked rows only
           and reports non-appearances separately through match rate. CSV uploads are temporary
           and remain in the current browser session only.

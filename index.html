@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NuBrakes Search Rank Tracker</title>
+  <title>NuBrakes Local Search Performance Dashboard</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,7 +13,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js'"></script>
 
   <style>
     * { box-sizing: border-box; }
@@ -46,15 +46,33 @@
 <body>
 <div id="root">
   <div class="loading-screen">
-    <div class="loading-card">Loading NuBrakes Search Rank Tracker…</div>
+    <div class="loading-card">Loading NuBrakes Local Search Performance Dashboard…</div>
   </div>
 </div>
 
 <script type="text/babel">
+if (!window.React || !window.ReactDOM || !window.Babel || !window.Recharts) {
+  const missing = [
+    !window.React && "React",
+    !window.ReactDOM && "ReactDOM",
+    !window.Babel && "Babel",
+    !window.Recharts && "Recharts",
+  ].filter(Boolean).join(", ");
+
+  document.getElementById("root").innerHTML = `
+    <div class="loading-screen">
+      <div class="loading-card">
+        <strong>Dashboard libraries failed to load.</strong><br><br>
+        Missing: ${missing}. Check your internet connection, content blocker, or CDN access.
+      </div>
+    </div>`;
+  throw new Error(`Missing browser libraries: ${missing}`);
+}
+
 const {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ReferenceLine, ResponsiveContainer, Legend
-} = Recharts;
+} = window.Recharts;
 
 const { useEffect, useMemo, useRef, useState } = React;
 
@@ -614,11 +632,32 @@ function RankTracker() {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const payload = await response.json();
+      const rawText = await response.text();
+
+      if (!rawText.trim()) {
+        throw new Error("The hosted JSON file is empty (0 data rows).");
+      }
+
+      let payload;
+      try {
+        payload = JSON.parse(rawText);
+      } catch (parseError) {
+        throw new Error(`The hosted file is not valid JSON: ${parseError.message}`);
+      }
+
+      const extracted = extractArray(payload);
       const normalized = normalizePayload(payload);
 
+      if (!extracted.length) {
+        throw new Error("The hosted JSON is valid but contains no records.");
+      }
+
       if (!normalized.length) {
-        throw new Error("The JSON loaded but no compatible Yext rows were found.");
+        const firstKeys = Object.keys(extracted[0] || {}).slice(0, 12).join(", ");
+        throw new Error(
+          `The JSON contains ${extracted.length.toLocaleString()} record(s), but none match the expected Yext fields. ` +
+          `First record keys: ${firstKeys || "none"}`
+        );
       }
 
       setRows(normalized);
@@ -890,7 +929,7 @@ function RankTracker() {
               letterSpacing: 0.5,
               textTransform: "uppercase",
             }}>
-              Search <span style={{ color: T.amber }}>Rank Tracker</span>
+              Local Search <span style={{ color: T.amber }}>Performance</span>
             </div>
             <div style={{ color: T.dim, fontSize: 13, marginTop: 2 }}>
               Local pack & organic first-match position · Google Desktop · lower is better

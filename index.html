@@ -78,6 +78,8 @@ const REVIEW_JOB_DATA_URL =
 const STORE_REVIEW_DATA_URL =
   "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_store_reviews_daily.json";
 
+const REPORT_YEAR = "2026";
+
 const YEXT_COLS = {
   week: "Week",
   entity: "Entity ID",
@@ -275,6 +277,11 @@ const normalizeStoreReviewPayload = (payload) =>
     .map(normalizeStoreReviewRow)
     .filter((row) => row.date && row.week && row.month && row.market && row.listing);
 
+const isReportYear = (value) => {
+  const raw = String(value || "").trim();
+  return raw.startsWith(`${REPORT_YEAR}-`) || raw.endsWith(`/${REPORT_YEAR}`);
+};
+
 const shortPeriod = (value, granularity) => {
   const date = isoDate(value);
   if (!date) return String(value || "");
@@ -282,21 +289,65 @@ const shortPeriod = (value, granularity) => {
   return granularity === "month" ? `${month}/${year.slice(2)}` : `${month}/${day}/${year.slice(2)}`;
 };
 
-const niceChartMax = (value) => {
-  if (!Number.isFinite(value) || value <= 0) return 1;
-  const power = 10 ** Math.floor(Math.log10(value));
-  const fraction = value / power;
-  const rounded = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-  return rounded * power;
+const niceStep = (rawStep) => {
+  if (!Number.isFinite(rawStep) || rawStep <= 0) return 1;
+  const power = 10 ** Math.floor(Math.log10(rawStep));
+  const fraction = rawStep / power;
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10;
+  return niceFraction * power;
 };
 
-const chartScale = (data, series) => {
-  const peak = Math.max(0, ...data.flatMap((row) =>
-    series.map((item) => Number.isFinite(row[item.key]) ? row[item.key] : 0)
-  ));
-  const max = niceChartMax(peak * 1.08);
-  const ticks = Array.from({ length: 5 }, (_, index) => +(max * index / 4).toFixed(2));
-  return { domain: [0, max], ticks };
+const chartScale = (
+  data,
+  series,
+  { includeZero = false, minLimit = -Infinity, maxLimit = Infinity, tickCount = 5 } = {}
+) => {
+  const values = data.flatMap((row) =>
+    series.map((item) => row[item.key]).filter(Number.isFinite)
+  );
+
+  if (!values.length) {
+    const fallbackMin = Number.isFinite(minLimit) ? minLimit : 0;
+    const fallbackMax = Number.isFinite(maxLimit) ? Math.min(maxLimit, fallbackMin + 1) : fallbackMin + 1;
+    return { domain: [fallbackMin, fallbackMax], ticks: [fallbackMin, fallbackMax] };
+  }
+
+  let low = Math.min(...values);
+  let high = Math.max(...values);
+  const spread = high - low;
+  const pad = spread > 0 ? spread * 0.12 : Math.max(Math.abs(high) * 0.12, 1);
+  low -= pad;
+  high += pad;
+
+  if (includeZero) low = Math.min(0, low);
+  low = Math.max(minLimit, low);
+  high = Math.min(maxLimit, high);
+
+  if (!(high > low)) {
+    low = Math.max(minLimit, low - 1);
+    high = Math.min(maxLimit, high + 1);
+  }
+
+  const step = niceStep((high - low) / Math.max(1, tickCount - 1));
+  let domainMin = includeZero ? 0 : Math.floor(low / step) * step;
+  let domainMax = Math.ceil(high / step) * step;
+  domainMin = Math.max(minLimit, domainMin);
+  domainMax = Math.min(maxLimit, domainMax);
+
+  if (!(domainMax > domainMin)) {
+    domainMin = Math.max(minLimit, domainMin - step);
+    domainMax = Math.min(maxLimit, domainMax + step);
+  }
+
+  const precision = step < 0.01 ? 3 : step < 1 ? 2 : step < 10 ? 1 : 0;
+  const ticks = [];
+  for (let value = domainMin, guard = 0; value <= domainMax + step * 0.25 && guard < 12; value += step, guard += 1) {
+    ticks.push(+value.toFixed(precision));
+  }
+  const roundedDomainMax = +domainMax.toFixed(precision);
+  if (!ticks.includes(roundedDomainMax)) ticks.push(roundedDomainMax);
+
+  return { domain: [domainMin, domainMax], ticks };
 };
 
 const sortKey = (week) => {
@@ -394,7 +445,13 @@ function SvgLineChart({
 
   return (
     <div style={{ width: "100%", overflowX: "auto" }}>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ width: "100%", minWidth: 620, display: "block" }}>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={`${series.map((item) => item.label).join(", ")} over time`}
+        style={{ width: "100%", minWidth: 620, display: "block" }}
+      >
+        <title>{`${series.map((item) => item.label).join(", ")} over time`}</title>
         {ticks.map((tick) => (
           <g key={tick}>
             <line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} stroke={T.line} strokeDasharray="3 6" />
@@ -460,7 +517,13 @@ function SvgBarChart({ data, dataKey, domain = [0, 100], ticks = [0, 25, 50, 75,
 
   return (
     <div style={{ width: "100%", overflowX: "auto" }}>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ width: "100%", minWidth: 620, display: "block" }}>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={`${dataKey} over time`}
+        style={{ width: "100%", minWidth: 620, display: "block" }}
+      >
+        <title>{`${dataKey} over time`}</title>
         {ticks.map((tick) => (
           <g key={tick}>
             <line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} stroke={T.line} strokeDasharray="3 6" />
@@ -525,6 +588,8 @@ function KeywordTrends({ rows, mode, keywords, entity, rolloutWeek, card, T }) {
     { key: `${keyword} · pack`, label: `${keyword} · pack`, color: colors[index % colors.length], width: 2.5 },
     { key: `${keyword} · organic`, label: `${keyword} · organic`, color: colors[index % colors.length], dashed: true, width: 2 },
   ]);
+  const positionScale = chartScale(positionData, chartSeries, { minLimit: 0 });
+  const rateScale = chartScale(rateData, chartSeries, { minLimit: 0, maxLimit: 100 });
 
   const heading = (text) => (
     <div style={{ paddingLeft: 20, fontFamily: "'Barlow Condensed'", fontWeight: 600, fontSize: 17, textTransform: "uppercase", letterSpacing: 0.8, color: T.dim }}>{text}</div>
@@ -536,11 +601,11 @@ function KeywordTrends({ rows, mode, keywords, entity, rolloutWeek, card, T }) {
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, marginTop: 12 }}>
       <div style={{ ...card, padding: "18px 8px 8px 0" }}>
         {heading("Position trend by keyword (solid = pack, dashed = organic)")}
-        <SvgLineChart data={positionData} series={chartSeries} domain={[0, 10]} ticks={[1, 3, 5, 7, 9]} reversed rolloutWeek={rolloutWeek} T={T} />
+        <SvgLineChart data={positionData} series={chartSeries} domain={positionScale.domain} ticks={positionScale.ticks} reversed rolloutWeek={rolloutWeek} T={T} />
       </div>
       <div style={{ ...card, padding: "18px 8px 8px 0" }}>
         {heading("Match rate trend by keyword (solid = pack, dashed = organic)")}
-        <SvgLineChart data={rateData} series={chartSeries} domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} percent rolloutWeek={rolloutWeek} T={T} />
+        <SvgLineChart data={rateData} series={chartSeries} domain={rateScale.domain} ticks={rateScale.ticks} percent rolloutWeek={rolloutWeek} T={T} />
       </div>
     </div>
   );
@@ -571,6 +636,20 @@ function TrendPanel({ rows, metric, mode, keyword, keywords, entity, rolloutWeek
   });
 
   const keywordLabel = keyword === "all" ? "all keywords" : `"${keyword}"`;
+  const positionSeries = [{ key: "position", label: "avg position", color: meta.color, width: 3, radius: 4.5 }];
+  const keywordSeries = keywords.map((keywordItem, index) => ({
+    key: keywordItem,
+    label: keywordItem,
+    color: colors[index % colors.length],
+    width: 2,
+  }));
+  const positionScale = chartScale(chartData, positionSeries, { minLimit: 0 });
+  const keywordScale = chartScale(chartData, keywordSeries, { minLimit: 0 });
+  const matchScale = chartScale(
+    chartData,
+    [{ key: "matchRate" }],
+    { minLimit: 0, maxLimit: 100 }
+  );
   const heading = (text) => (
     <div style={{ paddingLeft: 20, fontFamily: "'Barlow Condensed'", fontWeight: 600, fontSize: 17, textTransform: "uppercase", letterSpacing: 0.8, color: T.dim }}>{text}</div>
   );
@@ -581,9 +660,9 @@ function TrendPanel({ rows, metric, mode, keyword, keywords, entity, rolloutWeek
         {heading(`${meta.label} — weekly average position (${keywordLabel})`)}
         <SvgLineChart
           data={chartData}
-          series={[{ key: "position", label: "avg position", color: meta.color, width: 3, radius: 4.5 }]}
-          domain={meta.domain}
-          ticks={meta.ticks}
+          series={positionSeries}
+          domain={positionScale.domain}
+          ticks={positionScale.ticks}
           reversed
           rolloutWeek={rolloutWeek}
           T={T}
@@ -597,9 +676,9 @@ function TrendPanel({ rows, metric, mode, keyword, keywords, entity, rolloutWeek
             {heading("Keyword comparison")}
             <SvgLineChart
               data={chartData}
-              series={keywords.map((keywordItem, index) => ({ key: keywordItem, label: keywordItem, color: colors[index % colors.length], width: 2 }))}
-              domain={meta.domain}
-              ticks={meta.ticks}
+              series={keywordSeries}
+              domain={keywordScale.domain}
+              ticks={keywordScale.ticks}
               reversed
               T={T}
               height={220}
@@ -609,7 +688,7 @@ function TrendPanel({ rows, metric, mode, keyword, keywords, entity, rolloutWeek
 
         <div style={{ ...card, padding: "18px 8px 8px 0" }}>
           {heading(`Match rate — ${keywordLabel}`)}
-          <SvgBarChart data={chartData} dataKey="matchRate" domain={[0, 100]} color={meta.color} percent T={T} height={220} />
+          <SvgBarChart data={chartData} dataKey="matchRate" domain={matchScale.domain} ticks={matchScale.ticks} color={meta.color} percent T={T} height={220} />
         </div>
       </div>
     </>
@@ -626,8 +705,10 @@ function ReviewDashboard({
   selectStyle,
 }) {
   const [granularity, setGranularity] = useState("week");
-  const [selectedMarket, setSelectedMarket] = useState("all");
-  const [selectedListing, setSelectedListing] = useState("all");
+  const [selectedMarkets, setSelectedMarkets] = useState([]);
+  const [listingMarket, setListingMarket] = useState("all");
+  const [listingSelection, setListingSelection] = useState("top8");
+  const marketSelectionReady = useRef(false);
   const colors = marketColors(T);
 
   const markets = useMemo(() => [...new Set([
@@ -646,8 +727,27 @@ function ReviewDashboard({
   );
 
   useEffect(() => {
-    setSelectedListing("all");
-  }, [selectedMarket]);
+    if (!markets.length) return;
+    setSelectedMarkets((current) => {
+      if (!marketSelectionReady.current) {
+        marketSelectionReady.current = true;
+        return markets;
+      }
+      return current.filter((market) => markets.includes(market));
+    });
+  }, [markets]);
+
+  useEffect(() => {
+    setListingSelection("top8");
+  }, [listingMarket]);
+
+  const toggleMarket = (market) => {
+    setSelectedMarkets((current) =>
+      current.includes(market)
+        ? current.filter((item) => item !== market)
+        : [...current, market]
+    );
+  };
 
   const jobChartData = useMemo(() => {
     const buckets = {};
@@ -708,7 +808,7 @@ function ReviewDashboard({
   const listings = useMemo(() => {
     const byListing = {};
     storeRows
-      .filter((row) => selectedMarket === "all" || row.market === selectedMarket)
+      .filter((row) => listingMarket === "all" || row.market === listingMarket)
       .forEach((row) => {
         const item = byListing[row.listing] ||= {
           id: row.listing,
@@ -723,11 +823,15 @@ function ReviewDashboard({
     return Object.values(byListing).sort((a, b) =>
       b.reviews - a.reviews || a.storeCode.localeCompare(b.storeCode)
     );
-  }, [storeRows, selectedMarket]);
+  }, [storeRows, listingMarket]);
 
-  const plottedListings = selectedListing === "all"
+  const plottedListings = listingSelection === "top8"
     ? listings.slice(0, 8)
-    : listings.filter((item) => item.id === selectedListing);
+    : listingSelection === "bottom8"
+    ? [...listings]
+        .sort((a, b) => a.reviews - b.reviews || a.storeCode.localeCompare(b.storeCode))
+        .slice(0, 8)
+    : listings.filter((item) => item.id === listingSelection);
 
   const listingSeries = plottedListings.map((item, index) => ({
     key: `listing:${item.id}`,
@@ -739,7 +843,7 @@ function ReviewDashboard({
 
   const listingChartData = useMemo(() => {
     const scoped = storeRows.filter((row) =>
-      (selectedMarket === "all" || row.market === selectedMarket) &&
+      (listingMarket === "all" || row.market === listingMarket) &&
       plottedListings.some((item) => item.id === row.listing)
     );
     const buckets = {};
@@ -760,17 +864,14 @@ function ReviewDashboard({
         });
         return item;
       });
-  }, [storeRows, granularity, selectedMarket, selectedListing, listings]);
+  }, [storeRows, granularity, listingMarket, listingSelection, listings]);
 
   const makeMarketSeries = (availableMarkets) => [
     { key: "Total", label: "Total", color: T.ink, width: 3.5, radius: 4 },
-    ...(selectedMarket === "all"
-      ? availableMarkets
-      : availableMarkets.includes(selectedMarket) ? [selectedMarket] : []
-    ).map((market, index) => ({
+    ...availableMarkets.filter((market) => selectedMarkets.includes(market)).map((market) => ({
       key: market,
       label: market,
-      color: colors[index % colors.length],
+      color: colors[markets.indexOf(market) % colors.length],
       width: 2,
       radius: 2.75,
     })),
@@ -778,9 +879,9 @@ function ReviewDashboard({
 
   const jobMarketSeries = makeMarketSeries(jobMarkets);
   const reviewMarketSeries = makeMarketSeries(storeMarkets);
-  const rateScale = chartScale(jobChartData, jobMarketSeries);
-  const reviewScale = chartScale(reviewChartData, reviewMarketSeries);
-  const listingScale = chartScale(listingChartData, listingSeries);
+  const rateScale = chartScale(jobChartData, jobMarketSeries, { minLimit: 0, maxLimit: 100 });
+  const reviewScale = chartScale(reviewChartData, reviewMarketSeries, { minLimit: 0 });
+  const listingScale = chartScale(listingChartData, listingSeries, { minLimit: 0 });
   const latestRate = jobChartData[jobChartData.length - 1];
   const latestReviews = reviewChartData[reviewChartData.length - 1];
   const periodLabel = granularity === "week" ? "week" : "month";
@@ -857,17 +958,58 @@ function ReviewDashboard({
             ))}
           </div>
 
-          <label style={{ color: T.dim, fontSize: 13 }}>
-            Market focus
-            <select
-              value={selectedMarket}
-              onChange={(event) => setSelectedMarket(event.target.value)}
-              style={selectStyle}
-            >
-              <option value="all">Total + all markets</option>
-              {markets.map((market) => <option key={market} value={market}>{market}</option>)}
-            </select>
-          </label>
+          <div style={{ color: T.dim, fontSize: 13 }}>
+            {REPORT_YEAR} dates only
+          </div>
+        </div>
+
+        <div style={{ width: "100%", borderTop: `1px solid ${T.line}`, paddingTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ color: T.dim, fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>
+              Market lines · {selectedMarkets.length} of {markets.length} shown
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                type="button"
+                onClick={() => setSelectedMarkets(markets)}
+                style={{ background: "transparent", color: T.dim, border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 12 }}
+              >
+                Show all
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedMarkets([])}
+                style={{ background: "transparent", color: T.dim, border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 12 }}
+              >
+                Hide all
+              </button>
+            </div>
+          </div>
+          <div role="group" aria-label="Market lines shown on review charts" style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9 }}>
+            {markets.map((market) => {
+              const active = selectedMarkets.includes(market);
+              return (
+                <button
+                  key={market}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => toggleMarket(market)}
+                  style={{
+                    background: active ? T.ink : T.panelSoft,
+                    color: active ? T.panel : T.dim,
+                    border: `1px solid ${active ? T.ink : T.line}`,
+                    borderRadius: 999,
+                    padding: "6px 11px",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  {market}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -887,7 +1029,7 @@ function ReviewDashboard({
         {miniKpi(
           "Listings in scope",
           listings.length.toLocaleString(),
-          selectedMarket === "all" ? "all markets" : selectedMarket,
+          listingMarket === "all" ? "all markets" : listingMarket,
           T.blue
         )}
       </div>
@@ -927,25 +1069,41 @@ function ReviewDashboard({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", paddingRight: 18 }}>
           {heading(
             `Reviews per ${periodLabel} · per listing`,
-            selectedListing === "all"
-              ? "Top 8 listings by review volume in the selected market scope."
-              : "Showing one listing across the full available timeline."
+            listingSelection === "top8"
+              ? "Top 8 listings by review volume in the selected market."
+              : listingSelection === "bottom8"
+              ? "Bottom 8 listings by review volume in the selected market."
+              : "Showing one listing across the 2026 timeline."
           )}
-          <label style={{ color: T.dim, fontSize: 13 }}>
-            Listing
-            <select
-              value={selectedListing}
-              onChange={(event) => setSelectedListing(event.target.value)}
-              style={{ ...selectStyle, maxWidth: 430 }}
-            >
-              <option value="all">Top 8 listings</option>
-              {listings.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.storeCode} · {item.market} · {item.address || "No address"}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <label style={{ color: T.dim, fontSize: 13 }}>
+              Market
+              <select
+                value={listingMarket}
+                onChange={(event) => setListingMarket(event.target.value)}
+                style={selectStyle}
+              >
+                <option value="all">All markets</option>
+                {storeMarkets.map((market) => <option key={market} value={market}>{market}</option>)}
+              </select>
+            </label>
+            <label style={{ color: T.dim, fontSize: 13 }}>
+              Listing view
+              <select
+                value={listingSelection}
+                onChange={(event) => setListingSelection(event.target.value)}
+                style={{ ...selectStyle, maxWidth: 430 }}
+              >
+                <option value="top8">Top 8 listings</option>
+                <option value="bottom8">Bottom 8 listings</option>
+                {listings.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.storeCode} · {item.market} · {item.address || "No address"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
 
         {listingSeries.length ? (
@@ -1022,13 +1180,14 @@ function RankTracker() {
       }
 
       const extracted = extractArray(payload);
-      const normalized = normalizePayload(payload);
+      const normalizedAll = normalizePayload(payload);
+      const normalized = normalizedAll.filter((row) => isReportYear(row.week));
 
       if (!extracted.length) {
         throw new Error("The hosted JSON is valid but contains no records.");
       }
 
-      if (!normalized.length) {
+      if (!normalizedAll.length) {
         const firstKeys = Object.keys(extracted[0] || {}).slice(0, 12).join(", ");
         throw new Error(
           `The JSON contains ${extracted.length.toLocaleString()} record(s), but none match the expected Yext fields. ` +
@@ -1036,10 +1195,14 @@ function RankTracker() {
         );
       }
 
+      if (!normalized.length) {
+        throw new Error(`The hosted JSON contains no usable ${REPORT_YEAR} ranking rows.`);
+      }
+
       setRows(normalized);
       setSourceStatus("loaded");
       setSourceMessage(
-        `Live JSON loaded · ${normalized.length.toLocaleString()} rows · ` +
+        `${REPORT_YEAR} ranking data · ${normalized.length.toLocaleString()} rows · ` +
         `${new Set(normalized.map((row) => row.week)).size} weeks`
       );
     } catch (error) {
@@ -1074,12 +1237,26 @@ function RankTracker() {
         jobResponse.json(),
         storeResponse.json(),
       ]);
-      const normalizedJobs = normalizeReviewJobPayload(jobPayload);
-      const normalizedStores = normalizeStoreReviewPayload(storePayload);
+      const normalizedJobsAll = normalizeReviewJobPayload(jobPayload);
+      const normalizedStoresAll = normalizeStoreReviewPayload(storePayload);
+      const normalizedJobs = normalizedJobsAll.filter((row) =>
+        isReportYear(row.day) && isReportYear(row.week) && isReportYear(row.month)
+      );
+      const normalizedStores = normalizedStoresAll.filter((row) =>
+        isReportYear(row.date) && isReportYear(row.week) && isReportYear(row.month)
+      );
+
+      if (!normalizedJobsAll.length || !normalizedStoresAll.length) {
+        throw new Error(
+          `Expected review fields were not found (${normalizedJobsAll.length} job rows, ${normalizedStoresAll.length} store rows).`
+        );
+      }
+
 
       if (!normalizedJobs.length || !normalizedStores.length) {
         throw new Error(
-          `Expected review fields were not found (${normalizedJobs.length} job rows, ${normalizedStores.length} store rows).`
+          `The review sources do not contain both job and store rows for ${REPORT_YEAR} ` +
+          `(${normalizedJobs.length} job rows, ${normalizedStores.length} store rows).`
         );
       }
 
@@ -1087,7 +1264,7 @@ function RankTracker() {
       setStoreReviewRows(normalizedStores);
       setReviewSourceStatus("loaded");
       setReviewSourceMessage(
-        `Live review JSON loaded · ${normalizedJobs.length.toLocaleString()} job rows · ` +
+        `${REPORT_YEAR} review data · ${normalizedJobs.length.toLocaleString()} job rows · ` +
         `${normalizedStores.length.toLocaleString()} store rows · ` +
         `${new Set(normalizedStores.map((row) => row.listing)).size.toLocaleString()} listings`
       );
@@ -1157,7 +1334,7 @@ function RankTracker() {
       header: true,
       skipEmptyLines: true,
       complete: (result) => {
-        const parsed = result.data
+        const parsedAll = result.data
           .map(normalizeRow)
           .filter((row) =>
             row.week &&
@@ -1165,9 +1342,10 @@ function RankTracker() {
             row.keyword &&
             (!Number.isNaN(row.pack) || !Number.isNaN(row.organic))
           );
+        const parsed = parsedAll.filter((row) => isReportYear(row.week));
 
         if (!parsed.length) {
-          setNote("No usable Yext rows were found in that CSV.");
+          setNote(`No usable ${REPORT_YEAR} Yext rows were found in that CSV.`);
           return;
         }
 

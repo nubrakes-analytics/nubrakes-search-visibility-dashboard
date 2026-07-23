@@ -237,6 +237,15 @@ const monthStart = (value) => {
   return date ? `${date.slice(0, 7)}-01` : "";
 };
 
+const weekStart = (value) => {
+  const date = isoDate(value);
+  if (!date) return "";
+  const parsed = new Date(`${date}T00:00:00Z`);
+  const daysSinceMonday = (parsed.getUTCDay() + 6) % 7;
+  parsed.setUTCDate(parsed.getUTCDate() - daysSinceMonday);
+  return parsed.toISOString().slice(0, 10);
+};
+
 const cleanMarket = (value) => {
   const market = String(value || "").trim();
   return !market || market === "#N/A" ? "Unassigned" : market;
@@ -280,21 +289,29 @@ const normalizeStoreReviewPayload = (payload) =>
     .map(normalizeStoreReviewRow)
     .filter((row) => row.date && row.week && row.month && row.market && row.listing);
 
-const normalizeReviewRatingRow = (row) => ({
-  date: isoDate(pick(row, ["Date", "date", "Day", "day"])),
-  listing: String(pick(row, [
-    "Store code", "store_code", "Store Code", "Location ID", "location_id",
-  ])).trim(),
-  reviewId: String(pick(row, ["Review ID", "review_id"])).trim(),
-  rating: numberOrNaN(pick(row, ["Rating", "rating"])),
-  reviews: integerOrZero(pick(row, ["Reviews", "reviews"])),
-});
+const normalizeReviewRatingRow = (row) => {
+  const date = isoDate(pick(row, ["Date", "date", "Day", "day"]));
+
+  return {
+    date,
+    week: weekStart(date),
+    month: monthStart(date),
+    listing: String(pick(row, [
+      "Store code", "store_code", "Store Code", "Location ID", "location_id",
+    ])).trim(),
+    reviewId: String(pick(row, ["Review ID", "review_id"])).trim(),
+    rating: numberOrNaN(pick(row, ["Rating", "rating"])),
+    reviews: integerOrZero(pick(row, ["Reviews", "reviews"])),
+  };
+};
 
 const normalizeReviewRatingPayload = (payload) =>
   extractArray(payload)
     .map(normalizeReviewRatingRow)
     .filter((row) =>
       row.date &&
+      row.week &&
+      row.month &&
       row.listing &&
       Number.isFinite(row.rating) &&
       row.rating >= 1 &&
@@ -950,6 +967,39 @@ function ReviewDashboard({
       ),
     };
   }, [ratingRows, T]);
+  const qualityTrendData = useMemo(() => {
+    const buckets = {};
+
+    ratingRows.forEach((row) => {
+      const period = row[granularity];
+      if (!period) return;
+      const bucket = buckets[period] ||= { total: 0, five: 0, four: 0, threeOrLower: 0 };
+      bucket.total += row.reviews;
+      if (row.rating === 5) bucket.five += row.reviews;
+      else if (row.rating === 4) bucket.four += row.reviews;
+      else bucket.threeOrLower += row.reviews;
+    });
+
+    return Object.entries(buckets)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([period, bucket]) => ({
+        week: shortPeriod(period, granularity),
+        fullWeek: period,
+        fiveStars: bucket.total ? +((bucket.five / bucket.total) * 100).toFixed(2) : null,
+        fourStars: bucket.total ? +((bucket.four / bucket.total) * 100).toFixed(2) : null,
+        threeOrLower: bucket.total ? +((bucket.threeOrLower / bucket.total) * 100).toFixed(2) : null,
+      }));
+  }, [ratingRows, granularity]);
+  const qualityTrendSeries = [
+    { key: "fiveStars", label: "5 stars", color: T.teal, width: 3.5, radius: 4 },
+    { key: "fourStars", label: "4 stars", color: T.amber, width: 2.5, radius: 3 },
+    { key: "threeOrLower", label: "3 stars and lower", color: T.red, width: 2.5, radius: 3 },
+  ];
+  const qualityTrendScale = chartScale(
+    qualityTrendData,
+    qualityTrendSeries,
+    { minLimit: 0, maxLimit: 100 }
+  );
 
   const heading = (title, detail) => (
     <div style={{ padding: "0 18px 8px 20px" }}>
@@ -1097,6 +1147,22 @@ function ReviewDashboard({
           listingMarket === "all" ? "all markets" : listingMarket,
           T.blue
         )}
+      </div>
+
+      <div style={{ ...card, padding: "18px 8px 8px 0", marginTop: 12 }}>
+        {heading(
+          `Review quality trend · by ${periodLabel}`,
+          `Share of ${REPORT_YEAR} reviews in each star band for every ${periodLabel}. Use the reporting toggle above to switch the timeline.`
+        )}
+        <SvgLineChart
+          data={qualityTrendData}
+          series={qualityTrendSeries}
+          domain={qualityTrendScale.domain}
+          ticks={qualityTrendScale.ticks}
+          percent
+          T={T}
+          height={310}
+        />
       </div>
 
       <div style={{ ...card, padding: "18px 20px 20px", marginTop: 12 }}>

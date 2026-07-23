@@ -78,6 +78,9 @@ const REVIEW_JOB_DATA_URL =
 const STORE_REVIEW_DATA_URL =
   "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_store_reviews_daily.json";
 
+const REVIEW_RATING_DATA_URL =
+  "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_store_reviews_rating_daily.json";
+
 const REPORT_YEAR = "2026";
 
 const YEXT_COLS = {
@@ -276,6 +279,28 @@ const normalizeStoreReviewPayload = (payload) =>
   extractArray(payload)
     .map(normalizeStoreReviewRow)
     .filter((row) => row.date && row.week && row.month && row.market && row.listing);
+
+const normalizeReviewRatingRow = (row) => ({
+  date: isoDate(pick(row, ["Date", "date", "Day", "day"])),
+  listing: String(pick(row, [
+    "Store code", "store_code", "Store Code", "Location ID", "location_id",
+  ])).trim(),
+  reviewId: String(pick(row, ["Review ID", "review_id"])).trim(),
+  rating: numberOrNaN(pick(row, ["Rating", "rating"])),
+  reviews: integerOrZero(pick(row, ["Reviews", "reviews"])),
+});
+
+const normalizeReviewRatingPayload = (payload) =>
+  extractArray(payload)
+    .map(normalizeReviewRatingRow)
+    .filter((row) =>
+      row.date &&
+      row.listing &&
+      Number.isFinite(row.rating) &&
+      row.rating >= 1 &&
+      row.rating <= 5 &&
+      row.reviews > 0
+    );
 
 const isReportYear = (value) => {
   const raw = String(value || "").trim();
@@ -698,6 +723,7 @@ function TrendPanel({ rows, metric, mode, keyword, keywords, entity, rolloutWeek
 function ReviewDashboard({
   jobRows,
   storeRows,
+  ratingRows,
   sourceStatus,
   sourceMessage,
   card,
@@ -876,6 +902,54 @@ function ReviewDashboard({
   const latestRate = jobChartData[jobChartData.length - 1];
   const latestReviews = reviewChartData[reviewChartData.length - 1];
   const periodLabel = granularity === "week" ? "week" : "month";
+  const qualitySummary = useMemo(() => {
+    const total = ratingRows.reduce((sum, row) => sum + row.reviews, 0);
+    const groups = [
+      {
+        key: "five",
+        label: "5 stars",
+        detail: "Excellent",
+        count: ratingRows
+          .filter((row) => row.rating === 5)
+          .reduce((sum, row) => sum + row.reviews, 0),
+        color: T.teal,
+      },
+      {
+        key: "four",
+        label: "4 stars",
+        detail: "Good",
+        count: ratingRows
+          .filter((row) => row.rating === 4)
+          .reduce((sum, row) => sum + row.reviews, 0),
+        color: T.amber,
+      },
+      {
+        key: "three-or-lower",
+        label: "3 stars and lower",
+        detail: "Needs attention",
+        count: ratingRows
+          .filter((row) => row.rating <= 3)
+          .reduce((sum, row) => sum + row.reviews, 0),
+        color: T.red,
+      },
+    ];
+
+    return {
+      total,
+      rows: groups.map((group) => ({
+        ...group,
+        percent: total ? (group.count / total) * 100 : 0,
+      })),
+      firstDate: ratingRows.reduce(
+        (earliest, row) => !earliest || row.date < earliest ? row.date : earliest,
+        ""
+      ),
+      lastDate: ratingRows.reduce(
+        (latest, row) => !latest || row.date > latest ? row.date : latest,
+        ""
+      ),
+    };
+  }, [ratingRows, T]);
 
   const heading = (title, detail) => (
     <div style={{ padding: "0 18px 8px 20px" }}>
@@ -1022,6 +1096,117 @@ function ReviewDashboard({
           listings.length.toLocaleString(),
           listingMarket === "all" ? "all markets" : listingMarket,
           T.blue
+        )}
+      </div>
+
+      <div style={{ ...card, padding: "18px 20px 20px", marginTop: 12 }}>
+        {heading(
+          "Review quality · overall",
+          `All ${REPORT_YEAR} store-rating reviews${qualitySummary.firstDate && qualitySummary.lastDate
+            ? ` · ${shortPeriod(qualitySummary.firstDate, "week")}–${shortPeriod(qualitySummary.lastDate, "week")}`
+            : ""}. This table is not affected by the market-line or listing filters.`
+        )}
+
+        {qualitySummary.total ? (
+          <div style={{
+            marginTop: 6,
+            overflowX: "auto",
+            border: `1px solid ${T.line}`,
+            borderRadius: 8,
+          }}>
+            <table style={{ width: "100%", minWidth: 520, borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{
+                  color: T.dim,
+                  background: T.panelSoft,
+                  textTransform: "uppercase",
+                  fontSize: 11,
+                  letterSpacing: 0.8,
+                }}>
+                  <th scope="col" style={{ padding: "10px 12px", textAlign: "left", borderBottom: `1px solid ${T.line}` }}>
+                    Rating
+                  </th>
+                  <th scope="col" style={{ padding: "10px 12px", textAlign: "right", borderBottom: `1px solid ${T.line}` }}>
+                    Review count
+                  </th>
+                  <th scope="col" style={{ minWidth: 220, padding: "10px 12px", textAlign: "left", borderBottom: `1px solid ${T.line}` }}>
+                    % of all reviews
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {qualitySummary.rows.map((row) => (
+                  <tr key={row.key}>
+                    <th scope="row" style={{
+                      padding: "12px",
+                      textAlign: "left",
+                      borderBottom: `1px solid ${T.line}`,
+                    }}>
+                      <div style={{ color: T.ink, fontWeight: 600 }}>{row.label}</div>
+                      <div style={{ color: T.faint, fontSize: 11, fontWeight: 400, marginTop: 2 }}>{row.detail}</div>
+                    </th>
+                    <td style={{
+                      padding: "12px",
+                      textAlign: "right",
+                      color: T.ink,
+                      fontWeight: 700,
+                      fontVariantNumeric: "tabular-nums",
+                      borderBottom: `1px solid ${T.line}`,
+                    }}>
+                      {row.count.toLocaleString()}
+                    </td>
+                    <td style={{ padding: "12px", borderBottom: `1px solid ${T.line}` }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <div
+                          aria-hidden="true"
+                          style={{
+                            flex: 1,
+                            height: 8,
+                            overflow: "hidden",
+                            background: T.panelSoft,
+                            borderRadius: 999,
+                          }}
+                        >
+                          <div style={{
+                            width: `${row.percent}%`,
+                            height: "100%",
+                            minWidth: row.count ? 3 : 0,
+                            background: row.color,
+                            borderRadius: 999,
+                          }} />
+                        </div>
+                        <div style={{
+                          width: 54,
+                          textAlign: "right",
+                          color: row.color,
+                          fontWeight: 700,
+                          fontVariantNumeric: "tabular-nums",
+                        }}>
+                          {row.percent.toFixed(1)}%
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: T.panelSoft }}>
+                  <th scope="row" style={{ padding: "11px 12px", textAlign: "left" }}>All ratings</th>
+                  <td style={{
+                    padding: "11px 12px",
+                    textAlign: "right",
+                    fontWeight: 700,
+                    fontVariantNumeric: "tabular-nums",
+                  }}>
+                    {qualitySummary.total.toLocaleString()}
+                  </td>
+                  <td style={{ padding: "11px 12px", textAlign: "right", fontWeight: 700 }}>100.0%</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        ) : (
+          <div style={{ color: T.faint, padding: "20px 0 4px" }}>No rating-quality rows are available for this period.</div>
         )}
       </div>
 
@@ -1316,6 +1501,7 @@ function RankTracker() {
   const [sourceMessage, setSourceMessage] = useState("Loading the hosted weekly JSON…");
   const [reviewJobRows, setReviewJobRows] = useState([]);
   const [storeReviewRows, setStoreReviewRows] = useState([]);
+  const [reviewRatingRows, setReviewRatingRows] = useState([]);
   const [reviewSourceStatus, setReviewSourceStatus] = useState("loading");
   const [reviewSourceMessage, setReviewSourceMessage] = useState("Loading the hosted review JSON…");
   const [sectionTab, setSectionTab] = useState("rankings");
@@ -1401,56 +1587,67 @@ function RankTracker() {
 
     try {
       const cacheBuster = Date.now();
-      const [jobResponse, storeResponse] = await Promise.all([
+      const [jobResponse, storeResponse, ratingResponse] = await Promise.all([
         fetch(`${REVIEW_JOB_DATA_URL}?v=${cacheBuster}`, { cache: "no-store" }),
         fetch(`${STORE_REVIEW_DATA_URL}?v=${cacheBuster}`, { cache: "no-store" }),
+        fetch(`${REVIEW_RATING_DATA_URL}?v=${cacheBuster}`, { cache: "no-store" }),
       ]);
 
-      if (!jobResponse.ok || !storeResponse.ok) {
+      if (!jobResponse.ok || !storeResponse.ok || !ratingResponse.ok) {
         throw new Error(
-          `Review source request failed (${jobResponse.status}/${storeResponse.status}).`
+          `Review source request failed (${jobResponse.status}/${storeResponse.status}/${ratingResponse.status}).`
         );
       }
 
-      const [jobPayload, storePayload] = await Promise.all([
+      const [jobPayload, storePayload, ratingPayload] = await Promise.all([
         jobResponse.json(),
         storeResponse.json(),
+        ratingResponse.json(),
       ]);
       const normalizedJobsAll = normalizeReviewJobPayload(jobPayload);
       const normalizedStoresAll = normalizeStoreReviewPayload(storePayload);
+      const normalizedRatingsAll = normalizeReviewRatingPayload(ratingPayload);
       const normalizedJobs = normalizedJobsAll.filter((row) =>
         isReportYear(row.day) && isReportYear(row.week) && isReportYear(row.month)
       );
       const normalizedStores = normalizedStoresAll.filter((row) =>
         isReportYear(row.date) && isReportYear(row.week) && isReportYear(row.month)
       );
+      const normalizedRatings = normalizedRatingsAll.filter((row) =>
+        isReportYear(row.date)
+      );
 
-      if (!normalizedJobsAll.length || !normalizedStoresAll.length) {
+      if (!normalizedJobsAll.length || !normalizedStoresAll.length || !normalizedRatingsAll.length) {
         throw new Error(
-          `Expected review fields were not found (${normalizedJobsAll.length} job rows, ${normalizedStoresAll.length} store rows).`
+          `Expected review fields were not found (${normalizedJobsAll.length} job rows, ` +
+          `${normalizedStoresAll.length} store rows, ${normalizedRatingsAll.length} rating rows).`
         );
       }
 
 
-      if (!normalizedJobs.length || !normalizedStores.length) {
+      if (!normalizedJobs.length || !normalizedStores.length || !normalizedRatings.length) {
         throw new Error(
-          `The review sources do not contain both job and store rows for ${REPORT_YEAR} ` +
-          `(${normalizedJobs.length} job rows, ${normalizedStores.length} store rows).`
+          `The review sources do not contain job, store, and rating rows for ${REPORT_YEAR} ` +
+          `(${normalizedJobs.length} job rows, ${normalizedStores.length} store rows, ` +
+          `${normalizedRatings.length} rating rows).`
         );
       }
 
       setReviewJobRows(normalizedJobs);
       setStoreReviewRows(normalizedStores);
+      setReviewRatingRows(normalizedRatings);
       setReviewSourceStatus("loaded");
       setReviewSourceMessage(
         `${REPORT_YEAR} review data · ${normalizedJobs.length.toLocaleString()} job rows · ` +
         `${normalizedStores.length.toLocaleString()} store rows · ` +
+        `${normalizedRatings.length.toLocaleString()} rating rows · ` +
         `${new Set(normalizedStores.map((row) => row.listing)).size.toLocaleString()} listings`
       );
     } catch (error) {
       console.error(error);
       setReviewJobRows([]);
       setStoreReviewRows([]);
+      setReviewRatingRows([]);
       setReviewSourceStatus("error");
       setReviewSourceMessage(
         `Could not load the hosted review JSON: ${error.message} ` +
@@ -1840,6 +2037,9 @@ function RankTracker() {
               </a>
               <a href={STORE_REVIEW_DATA_URL} target="_blank" rel="noreferrer" style={{ color: T.blue, fontSize: 12 }}>
                 Store review data
+              </a>
+              <a href={REVIEW_RATING_DATA_URL} target="_blank" rel="noreferrer" style={{ color: T.blue, fontSize: 12 }}>
+                Rating quality data
               </a>
             </div>
           ) : (
@@ -2385,6 +2585,7 @@ function RankTracker() {
           <ReviewDashboard
             jobRows={reviewJobRows}
             storeRows={storeReviewRows}
+            ratingRows={reviewRatingRows}
             sourceStatus={reviewSourceStatus}
             sourceMessage={reviewSourceMessage}
             card={card}

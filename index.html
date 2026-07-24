@@ -748,10 +748,12 @@ function ReviewDashboard({
   selectStyle,
 }) {
   const [granularity, setGranularity] = useState("week");
-  const [selectedMarkets, setSelectedMarkets] = useState([]);
+  const [selectedJobMarkets, setSelectedJobMarkets] = useState([]);
+  const [selectedReviewMarkets, setSelectedReviewMarkets] = useState([]);
   const [listingMarket, setListingMarket] = useState("all");
   const [listingSelection, setListingSelection] = useState("top8");
-  const marketSelectionReady = useRef(false);
+  const jobMarketSelectionReady = useRef(false);
+  const reviewMarketSelectionReady = useRef(false);
   const colors = marketColors(T);
 
   const markets = useMemo(() => [...new Set([
@@ -770,22 +772,33 @@ function ReviewDashboard({
   );
 
   useEffect(() => {
-    if (!markets.length) return;
-    setSelectedMarkets((current) => {
-      if (!marketSelectionReady.current) {
-        marketSelectionReady.current = true;
-        return markets;
+    if (!jobMarkets.length) return;
+    setSelectedJobMarkets((current) => {
+      if (!jobMarketSelectionReady.current) {
+        jobMarketSelectionReady.current = true;
+        return jobMarkets;
       }
-      return current.filter((market) => markets.includes(market));
+      return current.filter((market) => jobMarkets.includes(market));
     });
-  }, [markets]);
+  }, [jobMarkets]);
+
+  useEffect(() => {
+    if (!storeMarkets.length) return;
+    setSelectedReviewMarkets((current) => {
+      if (!reviewMarketSelectionReady.current) {
+        reviewMarketSelectionReady.current = true;
+        return storeMarkets;
+      }
+      return current.filter((market) => storeMarkets.includes(market));
+    });
+  }, [storeMarkets]);
 
   useEffect(() => {
     setListingSelection("top8");
   }, [listingMarket]);
 
-  const toggleMarket = (market) => {
-    setSelectedMarkets((current) =>
+  const toggleMarket = (setSelection, market) => {
+    setSelection((current) =>
       current.includes(market)
         ? current.filter((item) => item !== market)
         : [...current, market]
@@ -891,7 +904,7 @@ function ReviewDashboard({
     });
 
     return Object.entries(buckets)
-      .sort(([a], [b]) => a.localeCompare(b))
+      .sort(([a], [b]) => b.localeCompare(a))
       .map(([period, bucket]) => {
         const item = { week: shortPeriod(period, granularity), fullWeek: period };
         plottedListings.forEach((listing) => {
@@ -901,7 +914,7 @@ function ReviewDashboard({
       });
   }, [storeRows, granularity, listingMarket, listingSelection, listings]);
 
-  const makeMarketSeries = (availableMarkets) => [
+  const makeMarketSeries = (availableMarkets, selectedMarkets) => [
     { key: "Total", label: "Total", color: T.ink, width: 3.5, radius: 4 },
     ...availableMarkets.filter((market) => selectedMarkets.includes(market)).map((market) => ({
       key: market,
@@ -912,8 +925,8 @@ function ReviewDashboard({
     })),
   ];
 
-  const jobMarketSeries = makeMarketSeries(jobMarkets);
-  const reviewMarketSeries = makeMarketSeries(storeMarkets);
+  const jobMarketSeries = makeMarketSeries(jobMarkets, selectedJobMarkets);
+  const reviewMarketSeries = makeMarketSeries(storeMarkets, selectedReviewMarkets);
   const rateScale = chartScale(jobChartData, jobMarketSeries, { minLimit: 0, maxLimit: 100 });
   const reviewScale = chartScale(reviewChartData, reviewMarketSeries, { minLimit: 0 });
   const latestRate = jobChartData[jobChartData.length - 1];
@@ -1025,6 +1038,69 @@ function ReviewDashboard({
     </div>
   );
 
+  const marketLineControls = (availableMarkets, selectedMarkets, setSelection, label) => (
+    <div style={{
+      margin: "0 18px 10px 20px",
+      padding: "10px 12px",
+      background: T.panelSoft,
+      border: `1px solid ${T.line}`,
+      borderRadius: 8,
+    }}>
+      <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 10,
+        flexWrap: "wrap",
+      }}>
+        <div style={{ color: T.dim, fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>
+          {label} market lines · {selectedMarkets.length} of {availableMarkets.length} shown
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => setSelection(availableMarkets)}
+            style={{ background: "transparent", color: T.dim, border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 12 }}
+          >
+            Show all
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelection([])}
+            style={{ background: "transparent", color: T.dim, border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 12 }}
+          >
+            Hide all
+          </button>
+        </div>
+      </div>
+      <div role="group" aria-label={`${label} market lines shown`} style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9 }}>
+        {availableMarkets.map((market) => {
+          const active = selectedMarkets.includes(market);
+          return (
+            <button
+              key={market}
+              type="button"
+              aria-pressed={active}
+              onClick={() => toggleMarket(setSelection, market)}
+              style={{
+                background: active ? T.ink : T.panel,
+                color: active ? T.panel : T.dim,
+                border: `1px solid ${active ? T.ink : T.line}`,
+                borderRadius: 999,
+                padding: "6px 11px",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              {market}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   if (sourceStatus === "error" && !jobRows.length && !storeRows.length) {
     return (
       <div style={{ ...card, marginTop: 14, color: T.red, lineHeight: 1.6 }}>
@@ -1047,7 +1123,7 @@ function ReviewDashboard({
         <div>
           <div style={{ fontWeight: 600, fontSize: 15 }}>Review reporting</div>
           <div style={{ color: T.faint, fontSize: 12, marginTop: 3 }}>
-            Compare total performance with every market, then drill into individual listings.
+            The weekly/monthly setting applies to every timeline. Market-line filters live on the charts they affect.
           </div>
         </div>
 
@@ -1075,55 +1151,6 @@ function ReviewDashboard({
 
           <div style={{ color: T.dim, fontSize: 13 }}>
             {REPORT_YEAR} dates only
-          </div>
-        </div>
-
-        <div style={{ width: "100%", borderTop: `1px solid ${T.line}`, paddingTop: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ color: T.dim, fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-              Market lines · {selectedMarkets.length} of {markets.length} shown
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button
-                type="button"
-                onClick={() => setSelectedMarkets(markets)}
-                style={{ background: "transparent", color: T.dim, border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 12 }}
-              >
-                Show all
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedMarkets([])}
-                style={{ background: "transparent", color: T.dim, border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 12 }}
-              >
-                Hide all
-              </button>
-            </div>
-          </div>
-          <div role="group" aria-label="Market lines shown on review charts" style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9 }}>
-            {markets.map((market) => {
-              const active = selectedMarkets.includes(market);
-              return (
-                <button
-                  key={market}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => toggleMarket(market)}
-                  style={{
-                    background: active ? T.ink : T.panelSoft,
-                    color: active ? T.panel : T.dim,
-                    border: `1px solid ${active ? T.ink : T.line}`,
-                    borderRadius: 999,
-                    padding: "6px 11px",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    fontWeight: 600,
-                  }}
-                >
-                  {market}
-                </button>
-              );
-            })}
           </div>
         </div>
       </div>
@@ -1281,6 +1308,12 @@ function ReviewDashboard({
           `Reviews per completed job · by ${periodLabel}`,
           "Percentage of completed jobs that generated a review. The bold line is the company total."
         )}
+        {marketLineControls(
+          jobMarkets,
+          selectedJobMarkets,
+          setSelectedJobMarkets,
+          "Review rate"
+        )}
         <SvgLineChart
           data={jobChartData}
           series={jobMarketSeries}
@@ -1297,6 +1330,12 @@ function ReviewDashboard({
           `Reviews per ${periodLabel} · total and by market`,
           "Store-review volume, with the company total shown against each market."
         )}
+        {marketLineControls(
+          storeMarkets,
+          selectedReviewMarkets,
+          setSelectedReviewMarkets,
+          "Review volume"
+        )}
         <SvgLineChart
           data={reviewChartData}
           series={reviewMarketSeries}
@@ -1312,10 +1351,10 @@ function ReviewDashboard({
           {heading(
             `Reviews per ${periodLabel} · per listing`,
             listingSelection === "top8"
-              ? `Top 8 listings by review volume, with one column per ${periodLabel}.`
+              ? `Top 8 listings by review volume, with the most recent ${periodLabel} first.`
               : listingSelection === "bottom8"
-              ? `Bottom 8 listings by review volume, with one column per ${periodLabel}.`
-              : `Showing one listing across the 2026 ${periodLabel}ly timeline.`
+              ? `Bottom 8 listings by review volume, with the most recent ${periodLabel} first.`
+              : `Showing one listing across the 2026 ${periodLabel}ly timeline, most recent first.`
           )}
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <label style={{ color: T.dim, fontSize: 13 }}>

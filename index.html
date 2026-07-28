@@ -748,6 +748,9 @@ function ReviewDashboard({
   selectStyle,
 }) {
   const [granularity, setGranularity] = useState("week");
+  const [dateRangeMode, setDateRangeMode] = useState("ytd");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
   const [selectedJobMarkets, setSelectedJobMarkets] = useState([]);
   const [selectedReviewMarkets, setSelectedReviewMarkets] = useState([]);
   const [listingMarket, setListingMarket] = useState("all");
@@ -755,6 +758,65 @@ function ReviewDashboard({
   const jobMarketSelectionReady = useRef(false);
   const reviewMarketSelectionReady = useRef(false);
   const colors = marketColors(T);
+
+  const dateBounds = useMemo(() => {
+    const dates = [
+      ...jobRows.map((row) => row.day),
+      ...storeRows.map((row) => row.date),
+      ...ratingRows.map((row) => row.date),
+    ].filter(Boolean).sort();
+
+    return {
+      earliest: dates[0] || "",
+      latest: dates[dates.length - 1] || "",
+    };
+  }, [jobRows, storeRows, ratingRows]);
+
+  const ytdStart = `${REPORT_YEAR}-01-01`;
+  const defaultCustomStart = dateBounds.earliest && dateBounds.earliest > ytdStart
+    ? dateBounds.earliest
+    : ytdStart;
+
+  useEffect(() => {
+    if (!dateBounds.latest) return;
+    setCustomStart((current) => current || defaultCustomStart);
+    setCustomEnd((current) => current || dateBounds.latest);
+  }, [dateBounds.latest, defaultCustomStart]);
+
+  const rangeStart = dateRangeMode === "custom"
+    ? (customStart || defaultCustomStart)
+    : ytdStart;
+  const rangeEnd = dateRangeMode === "custom"
+    ? (customEnd || dateBounds.latest)
+    : dateBounds.latest;
+
+  const filteredJobRows = useMemo(() =>
+    jobRows.filter((row) =>
+      (!rangeStart || row.day >= rangeStart) &&
+      (!rangeEnd || row.day <= rangeEnd)
+    ),
+    [jobRows, rangeStart, rangeEnd]
+  );
+
+  const filteredStoreRows = useMemo(() =>
+    storeRows.filter((row) =>
+      (!rangeStart || row.date >= rangeStart) &&
+      (!rangeEnd || row.date <= rangeEnd)
+    ),
+    [storeRows, rangeStart, rangeEnd]
+  );
+
+  const filteredRatingRows = useMemo(() =>
+    ratingRows.filter((row) =>
+      (!rangeStart || row.date >= rangeStart) &&
+      (!rangeEnd || row.date <= rangeEnd)
+    ),
+    [ratingRows, rangeStart, rangeEnd]
+  );
+
+  const dateRangeLabel = rangeStart && rangeEnd
+    ? `${shortPeriod(rangeStart, "week")}–${shortPeriod(rangeEnd, "week")}`
+    : dateRangeMode === "ytd" ? "YTD" : "custom range";
 
   const markets = useMemo(() => [...new Set([
     ...jobRows.map((row) => row.market),
@@ -808,7 +870,7 @@ function ReviewDashboard({
   const jobChartData = useMemo(() => {
     const buckets = {};
 
-    jobRows.forEach((row) => {
+    filteredJobRows.forEach((row) => {
       const period = row[granularity];
       if (!period) return;
       const bucket = buckets[period] ||= { reviews: 0, jobs: 0, markets: {} };
@@ -835,12 +897,12 @@ function ReviewDashboard({
         });
         return item;
       });
-  }, [jobRows, granularity, markets]);
+  }, [filteredJobRows, granularity, markets]);
 
   const reviewChartData = useMemo(() => {
     const buckets = {};
 
-    storeRows.forEach((row) => {
+    filteredStoreRows.forEach((row) => {
       const period = row[granularity];
       if (!period) return;
       const bucket = buckets[period] ||= { total: 0, markets: {} };
@@ -859,11 +921,11 @@ function ReviewDashboard({
         markets.forEach((market) => { item[market] = bucket.markets[market] || 0; });
         return item;
       });
-  }, [storeRows, granularity, markets]);
+  }, [filteredStoreRows, granularity, markets]);
 
   const listings = useMemo(() => {
     const byListing = {};
-    storeRows
+    filteredStoreRows
       .filter((row) => listingMarket === "all" || row.market === listingMarket)
       .forEach((row) => {
         const item = byListing[row.listing] ||= {
@@ -879,7 +941,7 @@ function ReviewDashboard({
     return Object.values(byListing).sort((a, b) =>
       b.reviews - a.reviews || a.storeCode.localeCompare(b.storeCode)
     );
-  }, [storeRows, listingMarket]);
+  }, [filteredStoreRows, listingMarket]);
 
   const plottedListings = listingSelection === "top8"
     ? listings.slice(0, 8)
@@ -890,7 +952,7 @@ function ReviewDashboard({
     : listings.filter((item) => item.id === listingSelection);
 
   const listingChartData = useMemo(() => {
-    const scoped = storeRows.filter((row) =>
+    const scoped = filteredStoreRows.filter((row) =>
       (listingMarket === "all" || row.market === listingMarket) &&
       plottedListings.some((item) => item.id === row.listing)
     );
@@ -912,7 +974,7 @@ function ReviewDashboard({
         });
         return item;
       });
-  }, [storeRows, granularity, listingMarket, listingSelection, listings]);
+  }, [filteredStoreRows, granularity, listingMarket, listingSelection, listings]);
 
   const makeMarketSeries = (availableMarkets, selectedMarkets) => [
     { key: "Total", label: "Total", color: T.ink, width: 3.5, radius: 4 },
@@ -933,13 +995,13 @@ function ReviewDashboard({
   const latestReviews = reviewChartData[reviewChartData.length - 1];
   const periodLabel = granularity === "week" ? "week" : "month";
   const qualitySummary = useMemo(() => {
-    const total = ratingRows.reduce((sum, row) => sum + row.reviews, 0);
+    const total = filteredRatingRows.reduce((sum, row) => sum + row.reviews, 0);
     const groups = [
       {
         key: "five",
         label: "5 stars",
         detail: "Excellent",
-        count: ratingRows
+        count: filteredRatingRows
           .filter((row) => row.rating === 5)
           .reduce((sum, row) => sum + row.reviews, 0),
         color: T.teal,
@@ -948,7 +1010,7 @@ function ReviewDashboard({
         key: "four",
         label: "4 stars",
         detail: "Good",
-        count: ratingRows
+        count: filteredRatingRows
           .filter((row) => row.rating === 4)
           .reduce((sum, row) => sum + row.reviews, 0),
         color: T.amber,
@@ -957,7 +1019,7 @@ function ReviewDashboard({
         key: "three-or-lower",
         label: "3 stars and lower",
         detail: "Needs attention",
-        count: ratingRows
+        count: filteredRatingRows
           .filter((row) => row.rating <= 3)
           .reduce((sum, row) => sum + row.reviews, 0),
         color: T.red,
@@ -970,20 +1032,20 @@ function ReviewDashboard({
         ...group,
         percent: total ? (group.count / total) * 100 : 0,
       })),
-      firstDate: ratingRows.reduce(
+      firstDate: filteredRatingRows.reduce(
         (earliest, row) => !earliest || row.date < earliest ? row.date : earliest,
         ""
       ),
-      lastDate: ratingRows.reduce(
+      lastDate: filteredRatingRows.reduce(
         (latest, row) => !latest || row.date > latest ? row.date : latest,
         ""
       ),
     };
-  }, [ratingRows, T]);
+  }, [filteredRatingRows, T]);
   const qualityTrendData = useMemo(() => {
     const buckets = {};
 
-    ratingRows.forEach((row) => {
+    filteredRatingRows.forEach((row) => {
       const period = row[granularity];
       if (!period) return;
       const bucket = buckets[period] ||= { total: 0, five: 0, four: 0, threeOrLower: 0 };
@@ -1002,7 +1064,7 @@ function ReviewDashboard({
         fourStars: bucket.total ? +((bucket.four / bucket.total) * 100).toFixed(2) : null,
         threeOrLower: bucket.total ? +((bucket.threeOrLower / bucket.total) * 100).toFixed(2) : null,
       }));
-  }, [ratingRows, granularity]);
+  }, [filteredRatingRows, granularity]);
   const qualityTrendSeries = [
     { key: "fiveStars", label: "5 stars", color: T.teal, width: 3.5, radius: 4 },
     { key: "fourStars", label: "4 stars", color: T.amber, width: 2.5, radius: 3 },
@@ -1123,11 +1185,61 @@ function ReviewDashboard({
         <div>
           <div style={{ fontWeight: 600, fontSize: 15 }}>Review reporting</div>
           <div style={{ color: T.faint, fontSize: 12, marginTop: 3 }}>
-            The weekly/monthly setting applies to every timeline. Market-line filters live on the charts they affect.
+            The date range and weekly/monthly settings apply to every Review metric. Market-line filters live on the charts they affect.
           </div>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <label style={{ color: T.dim, fontSize: 13 }}>
+            Date range
+            <select
+              aria-label="Review date range"
+              value={dateRangeMode}
+              onChange={(event) => setDateRangeMode(event.target.value)}
+              style={selectStyle}
+            >
+              <option value="ytd">Year to date (YTD)</option>
+              <option value="custom">Custom range</option>
+            </select>
+          </label>
+
+          {dateRangeMode === "custom" && (
+            <>
+              <label style={{ color: T.dim, fontSize: 13 }}>
+                From
+                <input
+                  aria-label="Review range start date"
+                  type="date"
+                  min={dateBounds.earliest || undefined}
+                  max={customEnd || dateBounds.latest || undefined}
+                  value={customStart}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setCustomStart(value);
+                    if (customEnd && value > customEnd) setCustomEnd(value);
+                  }}
+                  style={selectStyle}
+                />
+              </label>
+              <label style={{ color: T.dim, fontSize: 13 }}>
+                To
+                <input
+                  aria-label="Review range end date"
+                  type="date"
+                  min={customStart || dateBounds.earliest || undefined}
+                  max={dateBounds.latest || undefined}
+                  value={customEnd}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setCustomEnd(value);
+                    if (customStart && value < customStart) setCustomStart(value);
+                  }}
+                  style={selectStyle}
+                />
+              </label>
+            </>
+          )}
+
           <div style={{ display: "flex", background: T.panelSoft, border: `1px solid ${T.line}`, borderRadius: 8, overflow: "hidden" }}>
             {["week", "month"].map((item) => (
               <button
@@ -1150,7 +1262,7 @@ function ReviewDashboard({
           </div>
 
           <div style={{ color: T.dim, fontSize: 13 }}>
-            {REPORT_YEAR} dates only
+            {dateRangeMode === "ytd" ? "YTD" : "Custom"} · {dateRangeLabel}
           </div>
         </div>
       </div>
@@ -1179,7 +1291,7 @@ function ReviewDashboard({
       <div style={{ ...card, padding: "18px 8px 8px 0", marginTop: 12 }}>
         {heading(
           `Review quality trend · by ${periodLabel}`,
-          `Share of ${REPORT_YEAR} reviews in each star band for every ${periodLabel}. Use the reporting toggle above to switch the timeline.`
+          `Share of reviews in each star band for ${dateRangeLabel}, grouped by ${periodLabel}.`
         )}
         <SvgLineChart
           data={qualityTrendData}
@@ -1195,7 +1307,7 @@ function ReviewDashboard({
       <div style={{ ...card, padding: "18px 20px 20px", marginTop: 12 }}>
         {heading(
           "Review quality · overall",
-          `All ${REPORT_YEAR} store-rating reviews${qualitySummary.firstDate && qualitySummary.lastDate
+          `All store-rating reviews in the selected range${qualitySummary.firstDate && qualitySummary.lastDate
             ? ` · ${shortPeriod(qualitySummary.firstDate, "week")}–${shortPeriod(qualitySummary.lastDate, "week")}`
             : ""}. This table is not affected by the market-line or listing filters.`
         )}
@@ -1354,7 +1466,7 @@ function ReviewDashboard({
               ? `Top 8 listings by review volume, with the most recent ${periodLabel} first.`
               : listingSelection === "bottom8"
               ? `Bottom 8 listings by review volume, with the most recent ${periodLabel} first.`
-              : `Showing one listing across the 2026 ${periodLabel}ly timeline, most recent first.`
+              : `Showing one listing across the selected ${periodLabel}ly timeline, most recent first.`
           )}
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <label style={{ color: T.dim, fontSize: 13 }}>
@@ -1590,7 +1702,7 @@ function ReviewDashboard({
       </div>
 
       <div style={{ color: T.faint, fontSize: 12, marginTop: 14, lineHeight: 1.6 }}>
-        Review rate uses the reviews and completed jobs in the job-level daily source. Review volume and listing trends use the store-review daily source. Monthly values are summed into calendar months; weekly values use each source’s supplied week.
+        Review rate uses the reviews and completed jobs in the job-level daily source. Review volume and listing trends use the store-review daily source. The selected date range filters daily rows before aggregation, so boundary weeks or months may be partial.
       </div>
     </div>
   );

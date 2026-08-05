@@ -81,6 +81,9 @@ const STORE_REVIEW_DATA_URL =
 const REVIEW_RATING_DATA_URL =
   "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_store_reviews_rating_daily.json";
 
+const REVIEW_CLICK_DATA_URL =
+  "https://nubrakes-analytics.github.io/NuBrakes-Copilot/data/fact_nubrakes_review_click_analytics.json";
+
 const REPORT_YEAR = "2026";
 
 const YEXT_COLS = {
@@ -318,6 +321,25 @@ const normalizeReviewRatingPayload = (payload) =>
       row.rating <= 5 &&
       row.reviews > 0
     );
+
+const normalizeReviewClickRow = (row) => ({
+  requestDate: isoDate(pick(row, ["request_date", "Request Date", "date"])),
+  market: cleanMarket(pick(row, ["market", "Market"])),
+  resultType: String(pick(row, ["result_type", "Result Type"])).trim(),
+  utmSource: String(pick(row, ["utm_source", "UTM Source"])).trim() || "unknown",
+  requestedInvoices: integerOrZero(pick(row, ["requested_invoices", "Requested Invoices"])),
+  clickedInvoices: integerOrZero(pick(row, ["clicked_invoices", "Clicked Invoices"])),
+  overallClickRate: numberOrNaN(pick(row, ["overall_click_rate", "Overall Click Rate"])),
+  sourceClickedInvoices: integerOrZero(pick(row, ["source_clicked_invoices", "Source Clicked Invoices"])),
+  sourceClickEvents: integerOrZero(pick(row, ["source_click_events", "Source Click Events"])),
+  percentOfClickedInvoices: numberOrNaN(pick(row, ["percent_of_clicked_invoices", "Percent Of Clicked Invoices"])),
+  percentOfClickEvents: numberOrNaN(pick(row, ["percent_of_click_events", "Percent Of Click Events"])),
+});
+
+const normalizeReviewClickPayload = (payload) =>
+  extractArray(payload)
+    .map(normalizeReviewClickRow)
+    .filter((row) => row.requestDate && row.market && row.resultType);
 
 const isReportYear = (value) => {
   const raw = String(value || "").trim();
@@ -929,6 +951,384 @@ function TrendPanel({ rows, metric, mode, keyword, keywords, entity, rolloutWeek
         </div>
       </div>
     </>
+  );
+}
+
+function CategoryBarChart({ data, valueKey, labelKey, color, percent = false, T }) {
+  const maxValue = Math.max(1, ...data.map((row) => Number(row[valueKey]) || 0));
+
+  if (!data.length) {
+    return <div style={{ color: T.faint, padding: "24px 20px" }}>No data available for this view.</div>;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 11, padding: "8px 20px 20px" }}>
+      {data.map((row) => {
+        const value = Number(row[valueKey]) || 0;
+        return (
+          <div key={row[labelKey]} style={{ display: "grid", gridTemplateColumns: "110px 1fr 62px", gap: 10, alignItems: "center" }}>
+            <div title={row[labelKey]} style={{ color: T.dim, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {row[labelKey]}
+            </div>
+            <div style={{ height: 12, background: T.panelSoft, borderRadius: 999, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${Math.max(value > 0 ? 2 : 0, (value / maxValue) * 100)}%`, background: color, borderRadius: 999 }} />
+            </div>
+            <div style={{ color: T.ink, fontSize: 12, fontWeight: 600, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+              {percent ? `${value.toFixed(1)}%` : value.toLocaleString()}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function StackedMarketSourceChart({ rows, T }) {
+  const sourcePalette = {
+    sms: "#327fd6",
+    email: "#ef6a32",
+    flyer: "#1fb384",
+    unknown: "#92908b",
+    untagged: "#92908b",
+  };
+  const fallbackColors = [T.purple, T.amber, T.teal, T.red, T.blue];
+  const byMarket = {};
+  const sourceTotals = {};
+
+  rows.forEach((row) => {
+    const market = row.market || "Unassigned";
+    const source = (row.utmSource || "unknown").toLowerCase();
+    const events = row.sourceClickEvents || 0;
+    const marketRow = byMarket[market] ||= { market, total: 0, sources: {} };
+    marketRow.sources[source] = (marketRow.sources[source] || 0) + events;
+    marketRow.total += events;
+    sourceTotals[source] = (sourceTotals[source] || 0) + events;
+  });
+
+  const markets = Object.values(byMarket).filter((row) => row.total > 0).sort((a, b) => b.total - a.total);
+  const sources = Object.entries(sourceTotals).sort(([, a], [, b]) => b - a).map(([source]) => source);
+  const totalEvents = Object.values(sourceTotals).reduce((sum, value) => sum + value, 0);
+  const maxMarketTotal = Math.max(1, ...markets.map((row) => row.total));
+  const colorFor = (source, index) => sourcePalette[source] || fallbackColors[index % fallbackColors.length];
+
+  if (!markets.length) {
+    return <div style={{ color: T.faint, padding: "24px 20px" }}>No click events are available for this date range.</div>;
+  }
+
+  return (
+    <div style={{ padding: "4px 20px 22px" }}>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
+        {sources.map((source, index) => (
+          <div key={source} style={{ display: "inline-flex", alignItems: "center", gap: 7, color: T.dim, fontSize: 12 }}>
+            <span style={{ width: 12, height: 12, borderRadius: 3, background: colorFor(source, index) }} />
+            <strong style={{ color: T.ink, textTransform: "uppercase" }}>{source}</strong>
+            <span>{sourceTotals[source].toLocaleString()} ({totalEvents ? Math.round((sourceTotals[source] / totalEvents) * 100) : 0}%)</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gap: 12 }}>
+        {markets.map((market) => (
+          <div key={market.market} style={{ display: "grid", gridTemplateColumns: "110px minmax(180px, 1fr) 42px", gap: 10, alignItems: "center" }}>
+            <div title={market.market} style={{ color: T.dim, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "right" }}>
+              {market.market}
+            </div>
+            <div style={{ height: 24, display: "flex", background: T.panelSoft, borderRadius: 4, overflow: "hidden" }}>
+              {sources.map((source, index) => {
+                const events = market.sources[source] || 0;
+                if (!events) return null;
+                const shareOfScale = (events / maxMarketTotal) * 100;
+                const shareOfMarket = (events / market.total) * 100;
+                return (
+                  <div
+                    key={source}
+                    title={`${market.market} · ${source.toUpperCase()}: ${events.toLocaleString()} clicks (${shareOfMarket.toFixed(1)}%)`}
+                    style={{ width: `${shareOfScale}%`, minWidth: 2, background: colorFor(source, index), borderRight: `2px solid ${T.panel}` }}
+                  />
+                );
+              })}
+            </div>
+            <div style={{ color: T.ink, fontSize: 12, fontWeight: 600, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+              {market.total.toLocaleString()}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, selectStyle }) {
+  const overallRows = useMemo(
+    () => rows.filter((row) => row.resultType.toLowerCase() === "overall"),
+    [rows]
+  );
+  const sourceRows = useMemo(
+    () => rows.filter((row) => row.resultType.toLowerCase() === "utm source"),
+    [rows]
+  );
+  const markets = useMemo(
+    () => [...new Set(overallRows.map((row) => row.market))].sort(),
+    [overallRows]
+  );
+  const [marketFilter, setMarketFilter] = useState("all");
+  const [dateRangeMode, setDateRangeMode] = useState("all");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+
+  const dateBounds = useMemo(() => {
+    const dates = overallRows.map((row) => row.requestDate).filter(Boolean).sort();
+    return { earliest: dates[0] || "", latest: dates[dates.length - 1] || "" };
+  }, [overallRows]);
+
+  useEffect(() => {
+    if (!dateBounds.latest) return;
+    setCustomStart((current) => current || dateBounds.earliest);
+    setCustomEnd((current) => current || dateBounds.latest);
+  }, [dateBounds.earliest, dateBounds.latest]);
+
+  const rangeStart = dateRangeMode === "custom" ? (customStart || dateBounds.earliest) : dateBounds.earliest;
+  const rangeEnd = dateRangeMode === "custom" ? (customEnd || dateBounds.latest) : dateBounds.latest;
+  const dateRangeLabel = rangeStart && rangeEnd
+    ? `${shortPeriod(rangeStart, "week")}–${shortPeriod(rangeEnd, "week")}`
+    : "No dates";
+
+  useEffect(() => {
+    if (marketFilter !== "all" && !markets.includes(marketFilter)) setMarketFilter("all");
+  }, [markets, marketFilter]);
+
+  const dateFilteredOverall = useMemo(
+    () => overallRows.filter((row) =>
+      (!rangeStart || row.requestDate >= rangeStart) &&
+      (!rangeEnd || row.requestDate <= rangeEnd)
+    ),
+    [overallRows, rangeStart, rangeEnd]
+  );
+  const dateFilteredSources = useMemo(
+    () => sourceRows.filter((row) =>
+      (!rangeStart || row.requestDate >= rangeStart) &&
+      (!rangeEnd || row.requestDate <= rangeEnd)
+    ),
+    [sourceRows, rangeStart, rangeEnd]
+  );
+  const filteredOverall = useMemo(
+    () => dateFilteredOverall.filter((row) => marketFilter === "all" || row.market === marketFilter),
+    [dateFilteredOverall, marketFilter]
+  );
+  const filteredSources = useMemo(
+    () => dateFilteredSources.filter((row) => marketFilter === "all" || row.market === marketFilter),
+    [dateFilteredSources, marketFilter]
+  );
+
+  const totals = useMemo(() => {
+    const requested = filteredOverall.reduce((sum, row) => sum + row.requestedInvoices, 0);
+    const clicked = filteredOverall.reduce((sum, row) => sum + row.clickedInvoices, 0);
+    const events = filteredOverall.reduce((sum, row) => sum + row.sourceClickEvents, 0);
+    return { requested, clicked, events, rate: requested ? (clicked / requested) * 100 : 0 };
+  }, [filteredOverall]);
+
+  const allMarketClickEvents = useMemo(
+    () => dateFilteredSources.reduce((sum, row) => sum + row.sourceClickEvents, 0),
+    [dateFilteredSources]
+  );
+
+  const dailyTrend = useMemo(() => {
+    const buckets = {};
+    filteredOverall.forEach((row) => {
+      const bucket = buckets[row.requestDate] ||= { requested: 0, clicked: 0, events: 0 };
+      bucket.requested += row.requestedInvoices;
+      bucket.clicked += row.clickedInvoices;
+      bucket.events += row.sourceClickEvents;
+    });
+    return Object.entries(buckets)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, bucket]) => ({
+        week: shortPeriod(date, "week"),
+        fullWeek: date,
+        clickRate: bucket.requested ? +((bucket.clicked / bucket.requested) * 100).toFixed(2) : 0,
+      }));
+  }, [filteredOverall]);
+
+  const marketSummary = useMemo(() => {
+    const buckets = {};
+    dateFilteredOverall.forEach((row) => {
+      const bucket = buckets[row.market] ||= { market: row.market, requested: 0, clicked: 0, events: 0 };
+      bucket.requested += row.requestedInvoices;
+      bucket.clicked += row.clickedInvoices;
+      bucket.events += row.sourceClickEvents;
+    });
+    return Object.values(buckets)
+      .map((row) => ({ ...row, clickRate: row.requested ? (row.clicked / row.requested) * 100 : 0 }))
+      .sort((a, b) => b.clickRate - a.clickRate || b.requested - a.requested);
+  }, [dateFilteredOverall]);
+
+  const sourceSummary = useMemo(() => {
+    const buckets = {};
+    filteredSources.forEach((row) => {
+      const bucket = buckets[row.utmSource] ||= { utmSource: row.utmSource, events: 0, invoices: 0 };
+      bucket.events += row.sourceClickEvents;
+      bucket.invoices += row.sourceClickedInvoices;
+    });
+    const totalEvents = Object.values(buckets).reduce((sum, row) => sum + row.events, 0);
+    return Object.values(buckets)
+      .map((row) => ({ ...row, eventShare: totalEvents ? (row.events / totalEvents) * 100 : 0 }))
+      .sort((a, b) => b.events - a.events);
+  }, [filteredSources]);
+
+  const trendScale = chartScale(
+    dailyTrend,
+    [{ key: "clickRate" }],
+    { minLimit: 0, maxLimit: 100 }
+  );
+  const heading = (title, detail) => (
+    <div style={{ padding: "18px 18px 8px 20px" }}>
+      <div style={{ fontFamily: "'Barlow Condensed'", fontWeight: 600, fontSize: 18, textTransform: "uppercase", letterSpacing: 0.8 }}>{title}</div>
+      <div style={{ color: T.faint, fontSize: 12, marginTop: 3 }}>{detail}</div>
+    </div>
+  );
+  const miniKpi = (label, value, detail, color) => (
+    <div style={card}>
+      <div style={{ color: T.dim, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>{label}</div>
+      <div className="kpi-num" style={{ color, marginTop: 7 }}>{value}</div>
+      <div style={{ color: T.faint, fontSize: 12, marginTop: 5 }}>{detail}</div>
+    </div>
+  );
+
+  if (sourceStatus === "error" && !rows.length) {
+    return <div style={{ ...card, marginTop: 14, color: T.red }}>{sourceMessage}</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ ...card, marginTop: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 15 }}>Review click reporting</div>
+          <div style={{ color: T.faint, fontSize: 12, marginTop: 3 }}>
+            Invoice-cohort click performance from the first review-link request date.
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <label style={{ color: T.dim, fontSize: 13 }}>
+            Date range
+            <select
+              aria-label="Review Request Engagement date range"
+              value={dateRangeMode}
+              onChange={(event) => setDateRangeMode(event.target.value)}
+              style={selectStyle}
+            >
+              <option value="all">All available dates</option>
+              <option value="custom">Custom range</option>
+            </select>
+          </label>
+
+          {dateRangeMode === "custom" && (
+            <>
+              <label style={{ color: T.dim, fontSize: 13 }}>
+                From
+                <input
+                  aria-label="Review engagement range start date"
+                  type="date"
+                  min={dateBounds.earliest}
+                  max={customEnd || dateBounds.latest}
+                  value={customStart}
+                  onChange={(event) => setCustomStart(event.target.value)}
+                  onInput={(event) => setCustomStart(event.target.value)}
+                  style={selectStyle}
+                />
+              </label>
+              <label style={{ color: T.dim, fontSize: 13 }}>
+                To
+                <input
+                  aria-label="Review engagement range end date"
+                  type="date"
+                  min={customStart || dateBounds.earliest}
+                  max={dateBounds.latest}
+                  value={customEnd}
+                  onChange={(event) => setCustomEnd(event.target.value)}
+                  onInput={(event) => setCustomEnd(event.target.value)}
+                  style={selectStyle}
+                />
+              </label>
+            </>
+          )}
+
+          <label style={{ color: T.dim, fontSize: 13 }}>
+            Market
+            <select value={marketFilter} onChange={(event) => setMarketFilter(event.target.value)} style={selectStyle}>
+              <option value="all">All markets</option>
+              {markets.map((market) => <option key={market} value={market}>{market}</option>)}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginTop: 12 }}>
+        {miniKpi("Requested invoices", totals.requested.toLocaleString(), `${marketFilter === "all" ? "All markets" : marketFilter} · ${dateRangeLabel}`, T.blue)}
+        {miniKpi("Clicked invoices", totals.clicked.toLocaleString(), "Unique invoices with ≥1 click", T.teal)}
+        {miniKpi("Overall click rate", `${totals.rate.toFixed(1)}%`, "Clicked ÷ requested invoices", T.amber)}
+        {miniKpi("Click events", totals.events.toLocaleString(), "Includes repeat clicks", T.purple)}
+      </div>
+
+      <div style={{ ...card, padding: "0 8px 8px 0", marginTop: 12 }}>
+        {heading("Overall review click rate", `${marketFilter === "all" ? "All markets" : marketFilter} · ${dateRangeLabel} · daily request cohorts`)}
+        <SvgLineChart
+          data={dailyTrend}
+          series={[{ key: "clickRate", label: "click rate", color: T.amber, width: 3.5, radius: 4 }]}
+          domain={trendScale.domain}
+          ticks={trendScale.ticks}
+          percent
+          T={T}
+          height={270}
+        />
+      </div>
+
+      <div style={{ ...card, marginTop: 12 }}>
+        {heading(
+          `Here's how ${allMarketClickEvents.toLocaleString()} clicks break down`,
+          `Click events by market and UTM source · ${dateRangeLabel}`
+        )}
+        <StackedMarketSourceChart rows={dateFilteredSources} T={T} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12, marginTop: 12 }}>
+        <div style={card}>
+          {heading("Click rate by market", `Clicked invoices ÷ requested invoices · ${dateRangeLabel}`)}
+          <CategoryBarChart data={marketSummary} valueKey="clickRate" labelKey="market" color={T.teal} percent T={T} />
+        </div>
+        <div style={card}>
+          {heading("UTM source share", `${marketFilter === "all" ? "All markets" : marketFilter} · ${dateRangeLabel} · share of click events`)}
+          <CategoryBarChart data={sourceSummary} valueKey="eventShare" labelKey="utmSource" color={T.purple} percent T={T} />
+        </div>
+      </div>
+
+      <div style={{ ...card, marginTop: 12, overflowX: "auto" }}>
+        {heading("Market performance", `Volume and click efficiency by invoice market · ${dateRangeLabel}`)}
+        <table style={{ width: "100%", minWidth: 650, borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ color: T.dim, textAlign: "left" }}>
+              {["Market", "Requested invoices", "Clicked invoices", "Click rate", "Click events"].map((label) => (
+                <th key={label} style={{ padding: "9px 12px", borderBottom: `1px solid ${T.line}` }}>{label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {marketSummary.map((row) => (
+              <tr key={row.market}>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.line}`, fontWeight: 600 }}>{row.market}</td>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.line}` }}>{row.requested.toLocaleString()}</td>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.line}` }}>{row.clicked.toLocaleString()}</td>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.line}`, color: T.teal, fontWeight: 600 }}>{row.clickRate.toFixed(1)}%</td>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.line}` }}>{row.events.toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ color: T.faint, fontSize: 12, marginTop: 14, lineHeight: 1.6 }}>
+        Requested invoices are the denominator; clicked invoices are unique invoices with at least one click. Click events include repeat clicks. UTM source share uses click-event volume, so its categories total 100% for the selected market.
+      </div>
+    </div>
   );
 }
 
@@ -1916,6 +2316,9 @@ function RankTracker() {
   const [reviewRatingRows, setReviewRatingRows] = useState([]);
   const [reviewSourceStatus, setReviewSourceStatus] = useState("loading");
   const [reviewSourceMessage, setReviewSourceMessage] = useState("Loading the hosted review JSON…");
+  const [reviewClickRows, setReviewClickRows] = useState([]);
+  const [reviewClickStatus, setReviewClickStatus] = useState("loading");
+  const [reviewClickMessage, setReviewClickMessage] = useState("Loading review click analytics…");
   const [sectionTab, setSectionTab] = useState("rankings");
   const [rolloutWeek, setRolloutWeek] = useState("");
   const [mode, setMode] = useState("avgRanked");
@@ -2068,9 +2471,36 @@ function RankTracker() {
     }
   };
 
+  const loadReviewClickData = async () => {
+    setReviewClickStatus("loading");
+    setReviewClickMessage("Loading review click analytics…");
+
+    try {
+      const response = await fetch(`${REVIEW_CLICK_DATA_URL}?v=${Date.now()}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      const normalized = normalizeReviewClickPayload(payload);
+      if (!normalized.length) throw new Error("The dataset contains no recognizable review-click rows.");
+
+      setReviewClickRows(normalized);
+      setReviewClickStatus("loaded");
+      setReviewClickMessage(
+        `${REPORT_YEAR} review click data · ${normalized.length.toLocaleString()} rows · ` +
+        `${new Set(normalized.map((row) => row.requestDate)).size} day(s) · ` +
+        `${new Set(normalized.map((row) => row.market)).size} markets`
+      );
+    } catch (error) {
+      console.error(error);
+      setReviewClickRows([]);
+      setReviewClickStatus("error");
+      setReviewClickMessage(`Could not load review click analytics: ${error.message}`);
+    }
+  };
+
   useEffect(() => {
     loadHostedData();
     loadReviewData();
+    loadReviewClickData();
   }, []);
 
   const keywords = useMemo(
@@ -2286,7 +2716,11 @@ function RankTracker() {
     marginLeft: 6,
   };
 
-  const activeStatus = sectionTab === "reviews" ? reviewSourceStatus : sourceStatus;
+  const activeStatus = sectionTab === "reviews"
+    ? reviewSourceStatus
+    : sectionTab === "review-click"
+      ? reviewClickStatus
+      : sourceStatus;
   const statusColor =
     activeStatus === "loaded" ? T.teal :
     activeStatus === "error" ? T.red :
@@ -2328,7 +2762,9 @@ function RankTracker() {
             <div style={{ color: T.dim, fontSize: 13, marginTop: 2 }}>
               {sectionTab === "rankings"
                 ? "Local pack & organic first-match position · Google Desktop · lower is better"
-                : "Review generation, market performance, and listing-level trends"}
+                : sectionTab === "reviews"
+                  ? "Review generation, market performance, and listing-level trends"
+                  : "Review-link engagement, market performance, and UTM source mix"}
             </div>
           </div>
 
@@ -2352,6 +2788,7 @@ function RankTracker() {
               onClick={() => {
                 loadHostedData();
                 loadReviewData();
+                loadReviewClickData();
               }}
               style={{
                 background: T.panelSoft,
@@ -2408,6 +2845,7 @@ function RankTracker() {
           {[
             { key: "rankings", label: "Search rankings" },
             { key: "reviews", label: "Reviews" },
+            { key: "review-click", label: "Review Request Engagement" },
           ].map((item) => (
             <button
               key={item.key}
@@ -2440,7 +2878,11 @@ function RankTracker() {
           flexWrap: "wrap",
         }}>
           <div style={{ fontSize: 13, color: statusColor }}>
-            {sectionTab === "reviews" ? reviewSourceMessage : sourceMessage}
+            {sectionTab === "reviews"
+              ? reviewSourceMessage
+              : sectionTab === "review-click"
+                ? reviewClickMessage
+                : sourceMessage}
           </div>
           {sectionTab === "reviews" ? (
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -2454,6 +2896,10 @@ function RankTracker() {
                 Rating quality data
               </a>
             </div>
+          ) : sectionTab === "review-click" ? (
+            <a href={REVIEW_CLICK_DATA_URL} target="_blank" rel="noreferrer" style={{ color: T.blue, fontSize: 12 }}>
+              Review click analytics data
+            </a>
           ) : (
             <a
               href={RAW_DATA_URL}
@@ -3000,6 +3446,17 @@ function RankTracker() {
             ratingRows={reviewRatingRows}
             sourceStatus={reviewSourceStatus}
             sourceMessage={reviewSourceMessage}
+            card={card}
+            T={T}
+            selectStyle={selectStyle}
+          />
+        </div>
+
+        <div style={{ display: sectionTab === "review-click" ? "block" : "none" }} aria-hidden={sectionTab !== "review-click"}>
+          <ReviewClickDashboard
+            rows={reviewClickRows}
+            sourceStatus={reviewClickStatus}
+            sourceMessage={reviewClickMessage}
             card={card}
             T={T}
             selectStyle={selectStyle}

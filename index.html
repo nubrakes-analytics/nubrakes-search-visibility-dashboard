@@ -1027,6 +1027,68 @@ function StackedMarketSourceChart({ rows, T }) {
         ))}
       </div>
 
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "110px minmax(180px, 1fr) 42px",
+          gap: 10,
+          alignItems: "center",
+          marginBottom: 18,
+          paddingBottom: 18,
+          borderBottom: `1px solid ${T.line}`,
+        }}
+      >
+        <div
+          style={{
+            color: T.ink,
+            fontSize: 12,
+            fontWeight: 600,
+            textAlign: "right",
+          }}
+        >
+          Total review mix
+        </div>
+        <div
+          role="img"
+          aria-label={`Total review mix: ${sources.map((source) => `${source.toUpperCase()} ${sourceTotals[source].toLocaleString()} clicks`).join(", ")}`}
+          style={{
+            height: 28,
+            display: "flex",
+            background: T.panelSoft,
+            borderRadius: 4,
+            overflow: "hidden",
+          }}
+        >
+          {sources.map((source, index) => {
+            const events = sourceTotals[source] || 0;
+            const share = totalEvents ? (events / totalEvents) * 100 : 0;
+            return (
+              <div
+                key={source}
+                title={`Total review mix · ${source.toUpperCase()}: ${events.toLocaleString()} clicks (${share.toFixed(1)}%)`}
+                style={{
+                  width: `${share}%`,
+                  minWidth: events ? 2 : 0,
+                  background: colorFor(source, index),
+                  borderRight: `2px solid ${T.panel}`,
+                }}
+              />
+            );
+          })}
+        </div>
+        <div
+          style={{
+            color: T.ink,
+            fontSize: 12,
+            fontWeight: 700,
+            textAlign: "right",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {totalEvents.toLocaleString()}
+        </div>
+      </div>
+
       <div style={{ display: "grid", gap: 12 }}>
         {markets.map((market) => (
           <div key={market.market} style={{ display: "grid", gridTemplateColumns: "110px minmax(180px, 1fr) 42px", gap: 10, alignItems: "center" }}>

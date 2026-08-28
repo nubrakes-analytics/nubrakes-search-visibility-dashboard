@@ -1125,10 +1125,12 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
     () => rows.filter((row) => row.resultType.toLowerCase() === "overall"),
     [rows]
   );
-  const sourceRows = useMemo(
-    () => rows.filter((row) =>
-      ["utm source", "flyer"].includes(row.resultType.toLowerCase())
-    ),
+  const firstClickSourceRows = useMemo(
+    () => rows.filter((row) => row.resultType.toLowerCase() === "first click utm source"),
+    [rows]
+  );
+  const repeatClickSourceRows = useMemo(
+    () => rows.filter((row) => row.resultType.toLowerCase() === "repeat click utm source"),
     [rows]
   );
   const markets = useMemo(
@@ -1168,20 +1170,29 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
     ),
     [overallRows, rangeStart, rangeEnd]
   );
-  const dateFilteredSources = useMemo(
-    () => sourceRows.filter((row) =>
+  const filterByDate = (sourceRows) => sourceRows.filter((row) =>
       (!rangeStart || row.requestDate >= rangeStart) &&
       (!rangeEnd || row.requestDate <= rangeEnd)
-    ),
-    [sourceRows, rangeStart, rangeEnd]
+    );
+  const dateFilteredFirstClicks = useMemo(
+    () => filterByDate(firstClickSourceRows),
+    [firstClickSourceRows, rangeStart, rangeEnd]
+  );
+  const dateFilteredRepeatClicks = useMemo(
+    () => filterByDate(repeatClickSourceRows),
+    [repeatClickSourceRows, rangeStart, rangeEnd]
   );
   const filteredOverall = useMemo(
     () => dateFilteredOverall.filter((row) => marketFilter === "all" || row.market === marketFilter),
     [dateFilteredOverall, marketFilter]
   );
-  const filteredSources = useMemo(
-    () => dateFilteredSources.filter((row) => marketFilter === "all" || row.market === marketFilter),
-    [dateFilteredSources, marketFilter]
+  const filteredFirstClicks = useMemo(
+    () => dateFilteredFirstClicks.filter((row) => marketFilter === "all" || row.market === marketFilter),
+    [dateFilteredFirstClicks, marketFilter]
+  );
+  const filteredRepeatClicks = useMemo(
+    () => dateFilteredRepeatClicks.filter((row) => marketFilter === "all" || row.market === marketFilter),
+    [dateFilteredRepeatClicks, marketFilter]
   );
 
   const totals = useMemo(() => {
@@ -1191,9 +1202,12 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
     return { requested, clicked, events, rate: requested ? (clicked / requested) * 100 : 0 };
   }, [filteredOverall]);
 
-  const allMarketClickEvents = useMemo(
-    () => dateFilteredSources.reduce((sum, row) => sum + row.sourceClickEvents, 0),
-    [dateFilteredSources]
+  const engagementTotals = useMemo(
+    () => ({
+      firstClicks: filteredFirstClicks.reduce((sum, row) => sum + row.sourceClickEvents, 0),
+      repeatClicks: filteredRepeatClicks.reduce((sum, row) => sum + row.sourceClickEvents, 0),
+    }),
+    [filteredFirstClicks, filteredRepeatClicks]
   );
 
   const dailyTrend = useMemo(() => {
@@ -1228,7 +1242,7 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
 
   const sourceSummary = useMemo(() => {
     const buckets = {};
-    filteredSources.forEach((row) => {
+    filteredFirstClicks.forEach((row) => {
       const bucket = buckets[row.utmSource] ||= { utmSource: row.utmSource, events: 0, invoices: 0 };
       bucket.events += row.sourceClickEvents;
       bucket.invoices += row.sourceClickedInvoices;
@@ -1237,7 +1251,7 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
     return Object.values(buckets)
       .map((row) => ({ ...row, eventShare: totalEvents ? (row.events / totalEvents) * 100 : 0 }))
       .sort((a, b) => b.events - a.events);
-  }, [filteredSources]);
+  }, [filteredFirstClicks]);
 
   const trendScale = chartScale(
     dailyTrend,
@@ -1328,9 +1342,9 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginTop: 12 }}>
         {miniKpi("Requested invoices", totals.requested.toLocaleString(), `${marketFilter === "all" ? "All markets" : marketFilter} · ${dateRangeLabel}`, T.blue)}
-        {miniKpi("Clicked invoices", totals.clicked.toLocaleString(), "Unique invoices with ≥1 click", T.teal)}
+        {miniKpi("Customers who clicked", engagementTotals.firstClicks.toLocaleString(), "One first click per customer", T.teal)}
         {miniKpi("Overall click rate", `${totals.rate.toFixed(1)}%`, "Clicked ÷ requested invoices", T.amber)}
-        {miniKpi("Click events", totals.events.toLocaleString(), "Includes repeat clicks", T.purple)}
+        {miniKpi("Repeat clicks", engagementTotals.repeatClicks.toLocaleString(), "Additional clicks after the first", T.purple)}
       </div>
 
       <div style={{ ...card, padding: "0 8px 8px 0", marginTop: 12 }}>
@@ -1348,10 +1362,13 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
 
       <div style={{ ...card, marginTop: 12 }}>
         {heading(
-          `Here's how ${allMarketClickEvents.toLocaleString()} clicks break down`,
-          `Click events by market and UTM source · ${dateRangeLabel}`
+          `Here's how ${engagementTotals.firstClicks.toLocaleString()} customers clicked`,
+          `First clicks by market and UTM source · ${marketFilter === "all" ? "All markets" : marketFilter} · ${dateRangeLabel}`
         )}
-        <StackedMarketSourceChart rows={dateFilteredSources} T={T} />
+        <StackedMarketSourceChart rows={filteredFirstClicks} T={T} />
+        <div style={{ padding: "0 20px 18px", color: T.purple, fontSize: 12, fontWeight: 600 }}>
+          + {engagementTotals.repeatClicks.toLocaleString()} repeat clicks are reported separately and excluded from this one-per-customer breakdown.
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12, marginTop: 12 }}>
@@ -1360,7 +1377,7 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
           <CategoryBarChart data={marketSummary} valueKey="clickRate" labelKey="market" color={T.teal} percent T={T} />
         </div>
         <div style={card}>
-          {heading("UTM source share", `${marketFilter === "all" ? "All markets" : marketFilter} · ${dateRangeLabel} · share of click events`)}
+          {heading("UTM source share", `${marketFilter === "all" ? "All markets" : marketFilter} · ${dateRangeLabel} · share of first clicks`)}
           <CategoryBarChart data={sourceSummary} valueKey="eventShare" labelKey="utmSource" color={T.purple} percent T={T} />
         </div>
       </div>
@@ -1390,7 +1407,7 @@ function ReviewClickDashboard({ rows, sourceStatus, sourceMessage, card, T, sele
       </div>
 
       <div style={{ color: T.faint, fontSize: 12, marginTop: 14, lineHeight: 1.6 }}>
-        Requested invoices are the denominator; clicked invoices are unique invoices with at least one click. Click events include repeat clicks. UTM source share uses click-event volume, so its categories total 100% for the selected market.
+        Customers who clicked uses first-click records as the one-per-customer measure. Repeat clicks are additional engagements and remain separate. UTM source share uses first-click volume, so its categories total 100% for the selected market.
       </div>
     </div>
   );
